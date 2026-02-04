@@ -39,12 +39,12 @@ The database is created automatically on first use. WAL mode is enabled for safe
 ### Create and update
 
 ```bash
-ticket create "Title" [--description TEXT] [--parent ID] [--assign WHO] [--blocks ID] [--created-by WHO]
+ticket create "Title" [--description TEXT] [--parent ID] [--assign WHO] [--blocked-by ID] [--created-by WHO]
 ticket update ID [--title TEXT] [--description TEXT] [--assign WHO] [--status STATUS]
 ```
 
 - `create` prints the new ticket ID to stdout.
-- `--blocks ID` means the new ticket blocks the given ticket (adds a blocker row).
+- `--blocked-by ID` means the new ticket is blocked by the given ticket (cannot be claimed until that ticket is done).
 - `--created-by` defaults to `"human"`.
 
 ### Query

@@ -3,7 +3,7 @@
 
 Usage:
     ticket create "Title" [--description TEXT] [--parent ID] [--assign WHO]
-                          [--blocks ID] [--created-by WHO] [--db PATH]
+                          [--blocked-by ID] [--created-by WHO] [--db PATH]
     ticket update ID [--title TEXT] [--description TEXT] [--assign WHO]
                      [--status STATUS] [--db PATH]
     ticket list [--status STATUS] [--assigned-to WHO] [--format FMT] [--db PATH]
@@ -211,13 +211,13 @@ def cmd_create(args):
     )
     new_id = cur.lastrowid
 
-    if args.blocks is not None:
+    if args.blocked_by is not None:
         conn.execute(
             "INSERT INTO blockers (ticket_id, blocked_by) VALUES (?, ?)",
-            (args.blocks, new_id),
+            (new_id, args.blocked_by),
         )
-        log_activity(conn, args.blocks, args.created_by, "blocker_added",
-                      f"Blocked by new ticket #{new_id}")
+        log_activity(conn, new_id, args.created_by, "blocker_added",
+                      f"Blocked by ticket #{args.blocked_by}")
 
     log_activity(conn, new_id, args.created_by, "created", args.title)
     conn.commit()
@@ -229,6 +229,11 @@ def cmd_update(args):
     row = conn.execute("SELECT * FROM tickets WHERE id = ?", (args.id,)).fetchone()
     if not row:
         print(f"Ticket {args.id} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.status == "done":
+        print("Error: Cannot set status to 'done' directly. Use 'mark-done' instead.",
+              file=sys.stderr)
         sys.exit(1)
 
     fields = []
@@ -416,13 +421,30 @@ def cmd_complete(args):
         sys.exit(1)
 
     conn.execute(
-        "UPDATE tickets SET status = 'done', updated_at = datetime('now') WHERE id = ?",
+        "UPDATE tickets SET status = 'ready', updated_at = datetime('now') WHERE id = ?",
         (args.id,),
     )
     log_activity(conn, args.id, row["assigned_to"], "completed",
+                 f"Ticket #{args.id} marked work complete")
+    conn.commit()
+    print(f"Ticket {args.id} work complete.")
+
+
+def cmd_mark_done(args):
+    conn = connect(args.db)
+    row = conn.execute("SELECT * FROM tickets WHERE id = ?", (args.id,)).fetchone()
+    if not row:
+        print(f"Ticket {args.id} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    conn.execute(
+        "UPDATE tickets SET status = 'done', updated_at = datetime('now') WHERE id = ?",
+        (args.id,),
+    )
+    log_activity(conn, args.id, row["assigned_to"], "done",
                  f"Ticket #{args.id} marked done")
     conn.commit()
-    print(f"Ticket {args.id} completed.")
+    print(f"Ticket {args.id} done.")
 
 
 def cmd_unclaim(args):
@@ -534,8 +556,8 @@ def build_parser():
     p.add_argument("--description", default=None, help="Ticket description")
     p.add_argument("--parent", type=int, default=None, help="Parent ticket ID")
     p.add_argument("--assign", default=None, help="Assign to agent/human")
-    p.add_argument("--blocks", type=int, default=None,
-                   help="ID of ticket that the new ticket blocks")
+    p.add_argument("--blocked-by", type=int, default=None, dest="blocked_by",
+                   help="ID of ticket that must complete before this one")
     p.add_argument("--created-by", default="human", dest="created_by",
                    help="Creator identifier (default: human)")
 
@@ -581,7 +603,11 @@ def build_parser():
     p.add_argument("--format", default="text", choices=["text", "json"])
 
     # complete
-    p = sub.add_parser("complete", help="Mark a ticket as done")
+    p = sub.add_parser("complete", help="Signal work is finished (sets ready)")
+    p.add_argument("id", type=int, help="Ticket ID")
+
+    # mark-done (hidden — only used by agent-loop after git push)
+    p = sub.add_parser("mark-done", help=argparse.SUPPRESS)
     p.add_argument("id", type=int, help="Ticket ID")
 
     # unclaim
@@ -615,6 +641,7 @@ DISPATCH = {
     "comment": cmd_comment,
     "comments": cmd_comments,
     "complete": cmd_complete,
+    "mark-done": cmd_mark_done,
     "unclaim": cmd_unclaim,
     "block": cmd_block,
     "unblock": cmd_unblock,

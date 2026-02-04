@@ -49,20 +49,20 @@ All commands use `ticket --db /tickets/tickets.db`.
 | Claim work | `claim-next --agent $AGENT_ID` |
 | Log progress | `comment <ID> "message" --author $AGENT_ID` |
 | Break down work | `create "Sub-task" --parent <ID> --created-by $AGENT_ID` |
-| Set dependency | `create "Later task" --blocks <EARLIER_ID> --created-by $AGENT_ID` |
+| Depends on other work | `create "Task" --blocked-by <PREREQUISITE_ID> --created-by $AGENT_ID` |
 | Mark blocked | `block <ID> --by <BLOCKER_ID>` (auto-releases the ticket) |
-| Ask humans | `create "Question" --assign human --blocks <ID> --created-by $AGENT_ID` |
+| Ask humans | `create "Question" --assign human --created-by $AGENT_ID` then `block <YOUR_ID> --by <QUESTION_ID>` |
 | Release if stuck | `unclaim <ID>` |
-| Finish work | `complete <ID>` |
+| Signal work finished | `complete <ID>` |
 
 ## Dependencies
 
-Use `--blocks` when creating tickets to establish dependency order.
-Earlier/foundational tickets should block later/dependent ones.
+`--blocked-by <ID>` means "this new ticket cannot start until ticket <ID> is done." \
+Create foundational tickets first, then dependent tickets with `--blocked-by`.
 
-If your current ticket depends on unfinished work, run `ticket block <ID> --by <BLOCKER_ID>` — \
-this automatically releases the ticket back to the pool. Once the blocker is done, \
-the ticket becomes claimable again.
+If your current ticket depends on unfinished work, run `ticket block <YOUR_ID> --by <PREREQUISITE_ID>` — \
+this automatically releases your ticket back to the pool. Once the prerequisite is done, \
+your ticket becomes claimable again.
 
 ## Decision Making
 
@@ -126,11 +126,11 @@ SEED_TICKET_TITLE = (
 SEED_TICKET_DESCRIPTION = (
     "Read PROJECT.md to understand the product vision and CLAUDE.md for operating guidelines. "
     "Then break the project into concrete, actionable tickets using the ticket CLI.\n\n"
-    "IMPORTANT — establish dependency order using the --blocks flag:\n"
-    "- Earlier/foundational tickets should block later/dependent ones\n"
-    "- Example: 'Setup project structure' (ticket #2) should block 'Implement user auth' (ticket #3):\n"
+    "IMPORTANT — establish dependency order using --blocked-by:\n"
+    "- Create foundational tickets first, then dependent tickets that reference them\n"
+    "- Example: 'Setup project structure' (ticket #2) must finish before 'Implement user auth' (ticket #3):\n"
     "    ticket create 'Setup project structure' --parent 1 --created-by $AGENT_ID\n"
-    "    ticket create 'Implement user auth' --parent 1 --blocks 2 --created-by $AGENT_ID\n\n"
+    "    ticket create 'Implement user auth' --parent 1 --blocked-by 2 --created-by $AGENT_ID\n\n"
     "Each ticket should be small enough for one agent to complete in a single session. "
     "Include clear descriptions so any agent can pick up the work."
 )
@@ -395,6 +395,12 @@ def cmd_init(args):
             check=True, capture_output=True, text=True,
         )
         print("  Initialized git repo and created bare clone")
+
+    # Add bare repo as 'swarm' remote for easy pulling
+    subprocess.run(
+        ["git", "-C", project_dir, "remote", "add", "swarm", ".swarm/repo.git"],
+        capture_output=True, text=True,
+    )
 
     # ── 12. Create seed ticket ──────────────────────────────────────────
     if os.path.isfile(ticket_py):
@@ -746,6 +752,65 @@ def cmd_regenerate(args):
     print("\nDone. Run 'swarm stop && swarm start' to apply changes.")
 
 
+def cmd_pull(args):
+    """Pull latest changes from the swarm bare repo."""
+    project_dir = find_project_dir()
+    # Ensure remote exists
+    subprocess.run(
+        ["git", "-C", project_dir, "remote", "add", "swarm", ".swarm/repo.git"],
+        capture_output=True, text=True,
+    )
+    result = subprocess.run(
+        ["git", "-C", project_dir, "pull", "swarm", "main", "--ff-only"],
+    )
+    if result.returncode != 0:
+        print("\nFast-forward pull failed. You can try:", file=sys.stderr)
+        print("  git merge swarm/main", file=sys.stderr)
+        print("  git rebase swarm/main", file=sys.stderr)
+        sys.exit(result.returncode)
+
+
+def cmd_watch(args):
+    """Watch for new commits in the swarm bare repo and auto-pull."""
+    project_dir = find_project_dir()
+    bare_repo = os.path.join(project_dir, ".swarm", "repo.git")
+    interval = args.interval
+
+    # Ensure remote exists
+    subprocess.run(
+        ["git", "-C", project_dir, "remote", "add", "swarm", ".swarm/repo.git"],
+        capture_output=True, text=True,
+    )
+
+    def get_head():
+        r = subprocess.run(
+            ["git", "-C", bare_repo, "rev-parse", "HEAD"],
+            capture_output=True, text=True,
+        )
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    last_hash = get_head()
+    print(f"Watching {bare_repo} every {interval}s (Ctrl+C to stop)")
+    print(f"Current HEAD: {last_hash or '(unknown)'}")
+
+    try:
+        while True:
+            time.sleep(interval)
+            current = get_head()
+            if current and current != last_hash:
+                print(f"\nNew commit detected: {current[:12]}")
+                result = subprocess.run(
+                    ["git", "-C", project_dir, "pull", "swarm", "main", "--ff-only"],
+                )
+                if result.returncode == 0:
+                    print("Pulled successfully.")
+                else:
+                    print("Fast-forward failed — manual merge needed.", file=sys.stderr)
+                last_hash = current
+    except KeyboardInterrupt:
+        print("\nStopped watching.")
+
+
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
@@ -781,6 +846,13 @@ def build_parser():
     # regenerate
     sub.add_parser("regenerate", help="Regenerate docker-compose.yml and .swarm/ files from source")
 
+    # pull
+    sub.add_parser("pull", help="Pull latest changes from the swarm bare repo")
+
+    # watch
+    p = sub.add_parser("watch", help="Watch for new commits and auto-pull")
+    p.add_argument("--interval", type=int, default=5, help="Poll interval in seconds (default: 5)")
+
     return parser
 
 
@@ -792,6 +864,8 @@ DISPATCH = {
     "logs": cmd_logs,
     "scale": cmd_scale,
     "regenerate": cmd_regenerate,
+    "pull": cmd_pull,
+    "watch": cmd_watch,
 }
 
 

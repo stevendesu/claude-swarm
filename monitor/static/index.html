@@ -23,6 +23,7 @@
   --status-open: #4e9af5;
   --status-in-progress: #f0c040;
   --status-done: #4ade80;
+  --status-ready: #38bdf8;
   --status-blocked: #f06060;
   --status-human: #f0943e;
 }
@@ -131,6 +132,7 @@ textarea { resize: vertical; min-height: 80px; }
 .badge-open { background: rgba(78,154,245,0.15); color: var(--status-open); }
 .badge-in_progress { background: rgba(240,192,64,0.15); color: var(--status-in-progress); }
 .badge-done { background: rgba(74,222,128,0.15); color: var(--status-done); }
+.badge-ready { background: rgba(56,189,248,0.15); color: var(--status-ready); }
 .badge-blocked { background: rgba(240,96,96,0.15); color: var(--status-blocked); }
 .badge-human { background: rgba(240,148,62,0.15); color: var(--status-human); }
 
@@ -558,6 +560,7 @@ async function refreshStats() {
     el.innerHTML = `
       <div class="stat-item"><span class="stat-dot" style="background:var(--status-open)"></span> ${data.open || 0} open</div>
       <div class="stat-item"><span class="stat-dot" style="background:var(--status-in-progress)"></span> ${data.in_progress || 0} active</div>
+      <div class="stat-item"><span class="stat-dot" style="background:var(--status-ready)"></span> ${data.ready || 0} ready</div>
       <div class="stat-item"><span class="stat-dot" style="background:var(--status-blocked)"></span> ${data.blocked || 0} blocked</div>
       <div class="stat-item"><span class="stat-dot" style="background:var(--status-human)"></span> ${data.needs_human || 0} human</div>
       <div class="stat-item"><span class="stat-dot" style="background:var(--status-done)"></span> ${data.done || 0} done</div>
@@ -610,6 +613,7 @@ async function refreshTickets() {
 
     const needsHuman = tickets.filter(t => t.assigned_to === 'human' && t.status !== 'done');
     const inProgress = tickets.filter(t => t.status === 'in_progress' && t.assigned_to !== 'human');
+    const workComplete = tickets.filter(t => t.status === 'ready');
     const blocked = tickets.filter(t => t.is_blocked && t.status !== 'done' && t.assigned_to !== 'human' && t.status !== 'in_progress');
     const open = tickets.filter(t => t.status === 'open' && !t.is_blocked && t.assigned_to !== 'human');
     // Done: fetch separately with status filter
@@ -620,6 +624,7 @@ async function refreshTickets() {
     board.innerHTML =
       renderTicketGroup('Needs Human', needsHuman) +
       renderTicketGroup('In Progress', inProgress) +
+      renderTicketGroup('Work Complete', workComplete) +
       renderTicketGroup('Blocked', blocked) +
       renderTicketGroup('Open', open) +
       renderTicketGroup('Recently Done', doneTickets);
@@ -742,6 +747,7 @@ async function openTicket(id) {
       <select id="status-input">
         <option value="open">open</option>
         <option value="in_progress">in_progress</option>
+        <option value="ready">ready</option>
         <option value="done">done</option>
       </select>
       <button onclick="updateTicketStatus(${data.id})">Save</button>

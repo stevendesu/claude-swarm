@@ -104,9 +104,9 @@ PARENT TICKET CONTEXT: $PARENT_CONTEXT
 TICKET COMMANDS (use --db $TICKET_DB for all commands):
 - Log progress: ticket comment $TICKET_ID \"message\" --author $AGENT_ID
 - Create sub-tickets: ticket create \"Title\" --parent $TICKET_ID --description \"...\" --created-by $AGENT_ID
-- Set dependency order: ticket create \"Later task\" --blocks <EARLIER_TICKET_ID> --created-by $AGENT_ID
+- Depends on other work: ticket create \"Dependent task\" --blocked-by <PREREQUISITE_TICKET_ID> --created-by $AGENT_ID
 - Mark blocked: ticket block $TICKET_ID --by <BLOCKER_ID> (releases ticket; all code changes discarded)
-- Ask a human: ticket create \"Question\" --assign human --blocks $TICKET_ID --created-by $AGENT_ID
+- Ask a human: ticket create \"Question\" --assign human --created-by $AGENT_ID (then: ticket block $TICKET_ID --by <QUESTION_TICKET_ID>)
 - Release if stuck: ticket unclaim $TICKET_ID (all code changes discarded)
 
 Read CLAUDE.md for full operating guidelines." \
@@ -129,10 +129,11 @@ Read CLAUDE.md for full operating guidelines." \
   fi
 
   # Check if the agent released the ticket (blocked or unclaimed)
-  TICKET_ASSIGNED=$(ticket --db "$TICKET_DB" show "$TICKET_ID" --format json 2>/dev/null \
-    | jq -r '.assigned_to // ""')
+  TICKET_STATE_JSON=$(ticket --db "$TICKET_DB" show "$TICKET_ID" --format json 2>/dev/null || echo "{}")
+  TICKET_ASSIGNED=$(echo "$TICKET_STATE_JSON" | jq -r '.assigned_to // ""')
+  TICKET_STATUS=$(echo "$TICKET_STATE_JSON" | jq -r '.status // ""')
 
-  if [ "$TICKET_ASSIGNED" != "$AGENT_ID" ]; then
+  if [ "$TICKET_ASSIGNED" != "$AGENT_ID" ] && [ "$TICKET_STATUS" != "ready" ]; then
     # Agent released the ticket — discard half-baked changes
     ticket --db "$TICKET_DB" comment "$TICKET_ID" \
       "Discarding code changes — ticket was released during work" --author "$AGENT_ID"
@@ -225,7 +226,7 @@ Read CLAUDE.md for full operating guidelines." \
     done
 
     if [ "$PUSH_SUCCESS" = true ]; then
-      ticket --db "$TICKET_DB" complete "$TICKET_ID"
+      ticket --db "$TICKET_DB" mark-done "$TICKET_ID"
       ticket --db "$TICKET_DB" comment "$TICKET_ID" "Merged to main and completed" --author "$AGENT_ID"
     else
       ticket --db "$TICKET_DB" comment "$TICKET_ID" \
@@ -234,7 +235,7 @@ Read CLAUDE.md for full operating guidelines." \
     fi
   else
     ticket --db "$TICKET_DB" comment "$TICKET_ID" "No code changes produced" --author "$AGENT_ID"
-    ticket --db "$TICKET_DB" complete "$TICKET_ID"
+    ticket --db "$TICKET_DB" mark-done "$TICKET_ID"
   fi
 
   # Clean up for next iteration

@@ -134,8 +134,9 @@ def test_list():
         run(["create", "Task A"], db=db)
         run(["create", "Task B", "--assign", "agent-1"], db=db)
         run(["create", "Task C"], db=db)
-        # Mark one as done
+        # Mark one as done (complete sets ready, mark-done sets done)
         run(["complete", "3"], db=db)
+        run(["mark-done", "3"], db=db)
 
         # Default list (non-done)
         r = run(["list"], db=db)
@@ -174,6 +175,7 @@ def test_count():
         run(["create", "B"], db=db)
         run(["create", "C"], db=db)
         run(["complete", "3"], db=db)
+        run(["mark-done", "3"], db=db)
 
         r = run(["count"], db=db)
         assert_eq("count non-done", r.stdout.strip(), "2")
@@ -249,8 +251,15 @@ def test_claim_next_with_blockers():
         r = run(["claim-next", "--agent", "agent-B"], db=db)
         assert_rc("claim blocked nothing rc", r, 1)
 
-        # Complete ticket 1 (the blocker)
+        # Complete ticket 1 (sets ready — still blocking)
         run(["complete", "1"], db=db)
+
+        # Ticket 2 should still be blocked (blocker is ready, not done)
+        r = run(["claim-next", "--agent", "agent-B"], db=db)
+        assert_rc("claim still blocked rc", r, 1)
+
+        # Mark ticket 1 done (the only path to done)
+        run(["mark-done", "1"], db=db)
 
         # Now ticket 2 should be claimable
         r = run(["claim-next", "--agent", "agent-B", "--format", "json"], db=db)
@@ -321,7 +330,14 @@ def test_complete_and_unclaim():
         assert_rc("complete rc", r, 0)
         r = run(["show", "1", "--format", "json"], db=db)
         data = json.loads(r.stdout)
-        assert_eq("completed status", data["status"], "done")
+        assert_eq("completed status", data["status"], "ready")
+
+        # Mark done
+        r = run(["mark-done", "1"], db=db)
+        assert_rc("mark-done rc", r, 0)
+        r = run(["show", "1", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("mark-done status", data["status"], "done")
 
         # Complete nonexistent
         r = run(["complete", "999"], db=db)
@@ -370,28 +386,28 @@ def test_block_and_unblock():
         os.unlink(db)
 
 
-def test_create_with_blocks():
-    print("test_create_with_blocks")
+def test_create_with_blocked_by():
+    print("test_create_with_blocked_by")
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
-        # Create ticket 1 first
-        run(["create", "Main task"], db=db)
+        # Create ticket 1 (foundational task) first
+        run(["create", "Setup database"], db=db)
 
-        # Create ticket 2 that blocks ticket 1
-        r = run(["create", "Subtask", "--blocks", "1", "--created-by", "agent-1"], db=db)
-        assert_rc("create blocks rc", r, 0)
-        assert_eq("create blocks id", r.stdout.strip(), "2")
+        # Create ticket 2 that is blocked by ticket 1
+        r = run(["create", "Build API", "--blocked-by", "1", "--created-by", "agent-1"], db=db)
+        assert_rc("create blocked-by rc", r, 0)
+        assert_eq("create blocked-by id", r.stdout.strip(), "2")
 
-        # Ticket 1 should now be blocked by ticket 2
-        r = run(["show", "1", "--format", "json"], db=db)
-        data = json.loads(r.stdout)
-        assert_in("blocked by subtask", data["blocked_by"], 2)
-
-        # Ticket 2 should show it blocks ticket 1
+        # Ticket 2 should be blocked by ticket 1
         r = run(["show", "2", "--format", "json"], db=db)
         data = json.loads(r.stdout)
-        assert_in("blocks main", data["blocks"], 1)
+        assert_in("blocked by foundation", data["blocked_by"], 1)
+
+        # Ticket 1 should show it blocks ticket 2
+        r = run(["show", "1", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_in("blocks dependent", data["blocks"], 2)
     finally:
         os.unlink(db)
 
@@ -421,6 +437,7 @@ def test_activity_log():
         run(["comment", "1", "A comment", "--author", "agent-1"], db=db)
         run(["claim-next", "--agent", "agent-2"], db=db)
         run(["complete", "1"], db=db)
+        run(["mark-done", "1"], db=db)
 
         r = run(["log", "--limit", "10"], db=db)
         assert_rc("log rc", r, 0)
@@ -428,6 +445,7 @@ def test_activity_log():
         assert_in("log has commented", r.stdout, "commented")
         assert_in("log has claimed", r.stdout, "claimed")
         assert_in("log has completed", r.stdout, "completed")
+        assert_in("log has done", r.stdout, "done")
 
         # Log with default limit
         r = run(["log"], db=db)
@@ -575,6 +593,76 @@ def test_block_auto_unclaims():
         os.unlink(db)
 
 
+def test_mark_done():
+    print("test_mark_done")
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db = f.name
+    try:
+        run(["create", "Mark done task"], db=db)
+        run(["claim-next", "--agent", "agent-1"], db=db)
+
+        # Complete sets status to ready
+        r = run(["complete", "1"], db=db)
+        assert_rc("complete rc", r, 0)
+        r = run(["show", "1", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("complete sets ready", data["status"], "ready")
+
+        # Mark-done sets status to done
+        r = run(["mark-done", "1"], db=db)
+        assert_rc("mark-done rc", r, 0)
+        r = run(["show", "1", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("mark-done sets done", data["status"], "done")
+    finally:
+        os.unlink(db)
+
+
+def test_update_rejects_done():
+    print("test_update_rejects_done")
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db = f.name
+    try:
+        run(["create", "Cannot update to done"], db=db)
+
+        # Trying to update status to done should fail
+        r = run(["update", "1", "--status", "done"], db=db)
+        assert_rc("update done rc", r, 1)
+        assert_in("update done error", r.stderr, "done")
+    finally:
+        os.unlink(db)
+
+
+def test_ready_still_blocks():
+    print("test_ready_still_blocks")
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db = f.name
+    try:
+        # Create ticket 1 and ticket 2; ticket 2 blocked by ticket 1
+        run(["create", "Blocker task"], db=db)
+        run(["create", "Dependent task"], db=db)
+        run(["block", "2", "--by", "1"], db=db)
+
+        # Claim and complete ticket 1 (sets ready)
+        run(["claim-next", "--agent", "agent-1"], db=db)
+        run(["complete", "1"], db=db)
+
+        # Ticket 2 should still be blocked (blocker is ready, not done)
+        r = run(["claim-next", "--agent", "agent-2"], db=db)
+        assert_rc("claim blocked by ready rc", r, 1)
+
+        # Mark ticket 1 done
+        run(["mark-done", "1"], db=db)
+
+        # Now ticket 2 should be claimable
+        r = run(["claim-next", "--agent", "agent-2", "--format", "json"], db=db)
+        assert_rc("claim after done rc", r, 0)
+        data = json.loads(r.stdout)
+        assert_eq("claim gets ticket 2", data["id"], 2)
+    finally:
+        os.unlink(db)
+
+
 if __name__ == "__main__":
     tests = [
         test_create_and_show,
@@ -586,7 +674,7 @@ if __name__ == "__main__":
         test_comment_and_comments,
         test_complete_and_unclaim,
         test_block_and_unblock,
-        test_create_with_blocks,
+        test_create_with_blocked_by,
         test_parent,
         test_activity_log,
         test_default_created_by,
@@ -596,6 +684,9 @@ if __name__ == "__main__":
         test_comments_empty,
         test_show_with_comments,
         test_block_auto_unclaims,
+        test_mark_done,
+        test_update_rejects_done,
+        test_ready_still_blocks,
     ]
 
     for test in tests:

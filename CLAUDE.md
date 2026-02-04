@@ -125,7 +125,8 @@ Indexes on: `tickets.status`, `tickets.assigned_to`, `tickets.parent_id`, `comme
 |---------------|---------|
 | `open`        | Available for any agent to claim (unless it has open blockers) |
 | `in_progress` | Claimed and actively being worked on |
-| `done`        | Completed |
+| `ready`       | Agent signaled work complete; awaiting git push finalization |
+| `done`        | Completed (set by `mark-done` after successful push, or by human override) |
 
 There is **no `blocked` status**. Whether a ticket is blocked is derived from the `blockers` table at query time — if a ticket has entries pointing to non-`done` tickets, it is blocked. The `claim-next` command skips these automatically.
 
@@ -133,7 +134,7 @@ There is **no `blocked` status**. Whether a ticket is blocked is derived from th
 
 ```bash
 ticket create "Title" [--description TEXT] [--parent ID] [--assign WHO]
-                       [--blocks ID] [--created-by WHO]
+                       [--blocked-by ID] [--created-by WHO]
 ticket update ID [--title TEXT] [--description TEXT] [--assign WHO] [--status STATUS]
 ticket list [--status STATUS] [--assigned-to WHO] [--format text|json]
 ticket show ID [--format text|json]
@@ -142,6 +143,7 @@ ticket claim-next --agent AGENT [--format text|json]
 ticket comment ID "BODY" [--author WHO]
 ticket comments ID [--format text|json]
 ticket complete ID
+ticket mark-done ID                        # (hidden) finalize ticket after git push
 ticket unclaim ID
 ticket block ID --by ID
 ticket unblock ID --by ID
@@ -156,7 +158,7 @@ Atomic via `BEGIN IMMEDIATE`. Finds the oldest open ticket with no unresolved bl
 
 ### Blocker resolution
 
-No automatic status changes when a blocker is resolved. When a ticket is marked `done`, any tickets it was blocking become naturally unblocked — the next `claim-next` will find them because their blockers are all `done`.
+No automatic status changes when a blocker is resolved. Only `done` status unblocks dependents — `ready` does not. When a ticket is marked `done` (via `mark-done` or human override), any tickets it was blocking become naturally unblocked — the next `claim-next` will find them because their blockers are all `done`.
 
 ## Agent Container
 
@@ -209,8 +211,8 @@ Infinite loop:
    - Push branch with rebase-and-retry on rejection (up to 3 attempts)
    - If merge conflict during rebase: invoke Claude for semantic conflict resolution
    - Merge branch into main, push main
-   - Mark ticket `complete` on success, `unclaim` on failure
-   - If no code changes: mark complete without git operations
+   - Mark ticket `done` (via `mark-done`) on successful push, `unclaim` on failure
+   - If no code changes: mark `done` without git operations
 
 ### Key design decisions
 
@@ -232,6 +234,8 @@ Installed at `~/.local/bin/swarm`. Finds the project root by walking up from cwd
 | `swarm logs <svc>` | `docker compose logs -f <service>` |
 | `swarm scale N` | Update config, regenerate compose, restart |
 | `swarm regenerate` | Re-copy source files into `.swarm/`, regenerate docker-compose.yml |
+| `swarm pull` | Pull latest agent changes from the bare repo into host working tree |
+| `swarm watch` | Poll bare repo and auto-pull new commits (default: every 5s) |
 
 ### `swarm init` phases
 
@@ -283,6 +287,10 @@ When a ticket is created with `assigned_to = 'human'`, a push notification is se
 - Keep context windows short: supply all relevant context, no irrelevant context
 - Every directory gets a README.md explaining its purpose and contents
 - Update READMEs when code changes
+
+## Keeping documentation in sync
+
+Whenever you make a change that would impact either a README.md file or this CLAUDE.md, be sure to update the documentation so that it stays in sync. This way future runs benefit from the correct initial context.
 
 ## Archive
 
