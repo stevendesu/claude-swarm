@@ -1,0 +1,1017 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Swarm Monitor</title>
+<style>
+/* ---- Reset & Base ---- */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0f1117;
+  --bg-card: #1a1d27;
+  --bg-card-hover: #222632;
+  --bg-input: #252830;
+  --border: #2e3240;
+  --text: #e1e4ed;
+  --text-dim: #8b8fa3;
+  --text-bright: #ffffff;
+  --accent: #6c8cff;
+  --accent-hover: #8aa4ff;
+
+  --status-open: #4e9af5;
+  --status-in-progress: #f0c040;
+  --status-done: #4ade80;
+  --status-blocked: #f06060;
+  --status-human: #f0943e;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); }
+
+button {
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.875rem;
+  border: none;
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  background: var(--accent);
+  color: #fff;
+  transition: background 0.15s;
+}
+button:hover { background: var(--accent-hover); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.secondary { background: var(--bg-input); color: var(--text); border: 1px solid var(--border); }
+button.secondary:hover { background: var(--bg-card-hover); }
+button.danger { background: var(--status-blocked); }
+
+input, textarea, select {
+  font-family: inherit;
+  font-size: 0.875rem;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  width: 100%;
+}
+input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+textarea { resize: vertical; min-height: 80px; }
+
+/* ---- Layout ---- */
+.header {
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  padding: 0.75rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.header h1 { font-size: 1.25rem; font-weight: 600; color: var(--text-bright); }
+.header .stats {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.8rem;
+}
+.header .stat-item {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.stat-dot {
+  width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+}
+
+.tabs {
+  display: flex;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  padding: 0 1.5rem;
+}
+.tab-btn {
+  padding: 0.75rem 1.5rem;
+  font-size: 0.875rem;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.tab-btn:hover { color: var(--text); background: none; }
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.tab-content { display: none; padding: 1.5rem; max-width: 1200px; margin: 0 auto; }
+.tab-content.active { display: block; }
+
+/* ---- Status Badges ---- */
+.badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.badge-open { background: rgba(78,154,245,0.15); color: var(--status-open); }
+.badge-in_progress { background: rgba(240,192,64,0.15); color: var(--status-in-progress); }
+.badge-done { background: rgba(74,222,128,0.15); color: var(--status-done); }
+.badge-blocked { background: rgba(240,96,96,0.15); color: var(--status-blocked); }
+.badge-human { background: rgba(240,148,62,0.15); color: var(--status-human); }
+
+/* ---- Ticket Cards ---- */
+.ticket-group { margin-bottom: 2rem; }
+.ticket-group h2 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin-bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.ticket-group h2 .count {
+  background: var(--bg-input);
+  padding: 0.1rem 0.5rem;
+  border-radius: 10px;
+  font-size: 0.75rem;
+}
+
+.ticket-list { display: flex; flex-direction: column; gap: 0.5rem; }
+
+.ticket-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+.ticket-card:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--accent);
+}
+.ticket-card .ticket-id {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  font-weight: 600;
+  min-width: 3.5rem;
+}
+.ticket-card .ticket-info { min-width: 0; }
+.ticket-card .ticket-title {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ticket-card .ticket-meta {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.2rem;
+}
+.ticket-card .ticket-badges { display: flex; gap: 0.4rem; align-items: center; flex-shrink: 0; }
+
+.human-highlight {
+  border-left: 3px solid var(--status-human);
+}
+
+/* ---- Ticket Detail Modal ---- */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 200;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 2rem 1rem;
+  overflow-y: auto;
+}
+.modal-overlay.active { display: flex; }
+
+.modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 700px;
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
+}
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.modal-header h2 { font-size: 1.1rem; font-weight: 600; }
+.modal-close {
+  background: none;
+  color: var(--text-dim);
+  font-size: 1.5rem;
+  padding: 0;
+  line-height: 1;
+}
+.modal-close:hover { color: var(--text); background: none; }
+.modal-body { padding: 1.25rem 1.5rem; }
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.4rem 1rem;
+  font-size: 0.875rem;
+  margin-bottom: 1.25rem;
+}
+.detail-label { color: var(--text-dim); font-weight: 500; }
+
+.detail-description {
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+  margin-bottom: 1.25rem;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.comment-thread { margin-bottom: 1.25rem; }
+.comment-thread h3 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 0.75rem;
+}
+.comment-item {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.comment-item:last-child { border-bottom: none; }
+.comment-meta { color: var(--text-dim); font-size: 0.75rem; margin-bottom: 0.2rem; }
+.comment-body { white-space: pre-wrap; }
+
+.detail-blockers { margin-bottom: 1.25rem; }
+.blocker-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0;
+  font-size: 0.85rem;
+}
+.blocker-item a { cursor: pointer; }
+
+.detail-children { margin-bottom: 1.25rem; }
+
+.detail-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.comment-form {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.comment-form input { flex: 1; }
+
+/* ---- Create Ticket Form ---- */
+.create-form {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem;
+  margin-bottom: 1.5rem;
+  display: none;
+}
+.create-form.active { display: block; }
+.form-row { margin-bottom: 0.75rem; }
+.form-row label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-bottom: 0.25rem;
+  font-weight: 500;
+}
+.form-actions { display: flex; gap: 0.5rem; margin-top: 1rem; }
+
+/* ---- Agents Tab ---- */
+.agent-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 0.75rem;
+}
+.agent-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+.agent-name { font-weight: 600; font-size: 1rem; }
+.agent-state {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.agent-state.running { color: var(--status-done); }
+.agent-state.exited, .agent-state.stopped { color: var(--status-blocked); }
+
+.agent-meta {
+  display: flex;
+  gap: 1.5rem;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.usage-bar {
+  height: 6px;
+  background: var(--bg);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 0.3rem;
+}
+.usage-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+.usage-cpu .usage-bar-fill { background: var(--accent); }
+.usage-mem .usage-bar-fill { background: var(--status-human); }
+
+.usage-row {
+  display: flex;
+  gap: 2rem;
+  margin-bottom: 0.5rem;
+}
+.usage-item { flex: 1; }
+.usage-label { font-size: 0.75rem; color: var(--text-dim); }
+
+.agent-logs-btn {
+  font-size: 0.8rem;
+  padding: 0.3rem 0.75rem;
+}
+.agent-logs {
+  display: none;
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 0.75rem;
+  margin-top: 0.75rem;
+  font-family: "SF Mono", "Fira Code", "Fira Mono", Menlo, monospace;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  max-height: 300px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.agent-logs.active { display: block; }
+
+.no-agents {
+  text-align: center;
+  color: var(--text-dim);
+  padding: 3rem 1rem;
+}
+
+/* ---- Activity Tab ---- */
+.activity-feed { display: flex; flex-direction: column; gap: 0.25rem; }
+.activity-item {
+  display: grid;
+  grid-template-columns: 140px 70px 100px 1fr;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+  border-radius: 6px;
+  align-items: center;
+}
+.activity-item:hover { background: var(--bg-card); }
+.activity-time { color: var(--text-dim); font-family: monospace; font-size: 0.75rem; }
+.activity-ticket { color: var(--accent); font-weight: 500; }
+.activity-action { font-weight: 500; }
+.activity-detail { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- Responsive ---- */
+@media (max-width: 640px) {
+  .header { padding: 0.5rem 1rem; flex-wrap: wrap; gap: 0.5rem; }
+  .header .stats { flex-wrap: wrap; gap: 0.5rem; }
+  .tabs { padding: 0 0.5rem; overflow-x: auto; }
+  .tab-content { padding: 1rem; }
+  .ticket-card { grid-template-columns: 1fr; gap: 0.3rem; }
+  .ticket-card .ticket-id { min-width: auto; }
+  .ticket-card .ticket-badges { justify-content: flex-start; }
+  .activity-item { grid-template-columns: 1fr; gap: 0.2rem; }
+  .modal { margin: 0; border-radius: 0; max-height: 100vh; }
+  .modal-overlay { padding: 0; }
+  .usage-row { flex-direction: column; gap: 0.5rem; }
+}
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <h1>Swarm Monitor</h1>
+  <div class="stats" id="header-stats"></div>
+</div>
+
+<!-- Tabs -->
+<div class="tabs">
+  <button class="tab-btn active" data-tab="tickets">Tickets</button>
+  <button class="tab-btn" data-tab="agents">Agents</button>
+  <button class="tab-btn" data-tab="activity">Activity</button>
+</div>
+
+<!-- Tickets Tab -->
+<div class="tab-content active" id="tab-tickets">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+    <h2 style="font-size:1rem;font-weight:600;color:var(--text-bright);">Ticket Board</h2>
+    <button id="btn-new-ticket" onclick="toggleCreateForm()">+ New Ticket</button>
+  </div>
+
+  <!-- Create ticket form -->
+  <div class="create-form" id="create-form">
+    <div class="form-row">
+      <label for="new-title">Title *</label>
+      <input type="text" id="new-title" placeholder="Ticket title">
+    </div>
+    <div class="form-row">
+      <label for="new-desc">Description</label>
+      <textarea id="new-desc" placeholder="Details..."></textarea>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+      <div class="form-row">
+        <label for="new-parent">Parent Ticket ID</label>
+        <input type="number" id="new-parent" placeholder="(optional)">
+      </div>
+      <div class="form-row">
+        <label for="new-assign">Assign To</label>
+        <input type="text" id="new-assign" placeholder="human, agent-1, ...">
+      </div>
+    </div>
+    <div class="form-actions">
+      <button onclick="createTicket()">Create</button>
+      <button class="secondary" onclick="toggleCreateForm()">Cancel</button>
+    </div>
+  </div>
+
+  <div id="ticket-board"></div>
+</div>
+
+<!-- Agents Tab -->
+<div class="tab-content" id="tab-agents">
+  <h2 style="font-size:1rem;font-weight:600;color:var(--text-bright);margin-bottom:1rem;">Agent Containers</h2>
+  <div id="agents-list"></div>
+</div>
+
+<!-- Activity Tab -->
+<div class="tab-content" id="tab-activity">
+  <h2 style="font-size:1rem;font-weight:600;color:var(--text-bright);margin-bottom:1rem;">Activity Feed</h2>
+  <div class="activity-feed" id="activity-feed"></div>
+</div>
+
+<!-- Ticket Detail Modal -->
+<div class="modal-overlay" id="ticket-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="modal-title"></h2>
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+let currentTab = 'tickets';
+let refreshTimer = null;
+let currentModalTicketId = null;
+
+// ---------------------------------------------------------------------------
+// API helpers
+// ---------------------------------------------------------------------------
+
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Tab switching
+// ---------------------------------------------------------------------------
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+    const tab = btn.dataset.tab;
+    document.getElementById('tab-' + tab).classList.add('active');
+    currentTab = tab;
+    refresh();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stats header
+// ---------------------------------------------------------------------------
+
+async function refreshStats() {
+  try {
+    const data = await api('GET', '/api/stats');
+    const el = document.getElementById('header-stats');
+    el.innerHTML = `
+      <div class="stat-item"><span class="stat-dot" style="background:var(--status-open)"></span> ${data.open || 0} open</div>
+      <div class="stat-item"><span class="stat-dot" style="background:var(--status-in-progress)"></span> ${data.in_progress || 0} active</div>
+      <div class="stat-item"><span class="stat-dot" style="background:var(--status-blocked)"></span> ${data.blocked || 0} blocked</div>
+      <div class="stat-item"><span class="stat-dot" style="background:var(--status-human)"></span> ${data.needs_human || 0} human</div>
+      <div class="stat-item"><span class="stat-dot" style="background:var(--status-done)"></span> ${data.done || 0} done</div>
+    `;
+  } catch(e) { /* silently retry next cycle */ }
+}
+
+// ---------------------------------------------------------------------------
+// Tickets tab
+// ---------------------------------------------------------------------------
+
+function statusBadge(status) {
+  return `<span class="badge badge-${status}">${status.replace('_', ' ')}</span>`;
+}
+
+function renderTicketCard(t) {
+  const isHuman = t.assigned_to === 'human' && t.status !== 'done';
+  const highlight = isHuman ? ' human-highlight' : '';
+  const meta = [];
+  if (t.assigned_to) meta.push('assigned: ' + t.assigned_to);
+  if (t.parent_id) meta.push('parent: #' + t.parent_id);
+  if (t.comment_count) meta.push(t.comment_count + ' comment' + (t.comment_count > 1 ? 's' : ''));
+  if (t.is_blocked) meta.push('BLOCKED');
+
+  return `<div class="ticket-card${highlight}" onclick="openTicket(${t.id})">
+    <div class="ticket-id">#${t.id}</div>
+    <div class="ticket-info">
+      <div class="ticket-title">${esc(t.title)}</div>
+      <div class="ticket-meta">${meta.map(esc).join(' &middot; ')}</div>
+    </div>
+    <div class="ticket-badges">
+      ${t.is_blocked ? '<span class="badge badge-blocked">blocked</span>' : ''}
+      ${statusBadge(t.status)}
+    </div>
+  </div>`;
+}
+
+function renderTicketGroup(title, tickets) {
+  if (!tickets.length) return '';
+  return `<div class="ticket-group">
+    <h2>${title} <span class="count">${tickets.length}</span></h2>
+    <div class="ticket-list">${tickets.map(renderTicketCard).join('')}</div>
+  </div>`;
+}
+
+async function refreshTickets() {
+  try {
+    const data = await api('GET', '/api/tickets');
+    const tickets = data.tickets || [];
+
+    const needsHuman = tickets.filter(t => t.assigned_to === 'human' && t.status !== 'done');
+    const inProgress = tickets.filter(t => t.status === 'in_progress' && t.assigned_to !== 'human');
+    const blocked = tickets.filter(t => t.is_blocked && t.status !== 'done' && t.assigned_to !== 'human' && t.status !== 'in_progress');
+    const open = tickets.filter(t => t.status === 'open' && !t.is_blocked && t.assigned_to !== 'human');
+    // Done: fetch separately with status filter
+    const doneData = await api('GET', '/api/tickets?status=done');
+    const doneTickets = (doneData.tickets || []).slice(-20).reverse();
+
+    const board = document.getElementById('ticket-board');
+    board.innerHTML =
+      renderTicketGroup('Needs Human', needsHuman) +
+      renderTicketGroup('In Progress', inProgress) +
+      renderTicketGroup('Blocked', blocked) +
+      renderTicketGroup('Open', open) +
+      renderTicketGroup('Recently Done', doneTickets);
+
+    if (!tickets.length && !doneTickets.length) {
+      board.innerHTML = '<p style="text-align:center;color:var(--text-dim);padding:3rem;">No tickets yet. Create one to get started.</p>';
+    }
+  } catch(e) {
+    console.error('Failed to refresh tickets:', e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ticket detail modal
+// ---------------------------------------------------------------------------
+
+async function openTicket(id) {
+  currentModalTicketId = id;
+  const data = await api('GET', '/api/tickets/' + id);
+  if (data.error) { alert(data.error); return; }
+
+  document.getElementById('modal-title').textContent = '#' + data.id + ' ' + data.title;
+
+  let html = '';
+
+  // Status and metadata grid
+  html += '<div class="detail-grid">';
+  html += `<div class="detail-label">Status</div><div>${statusBadge(data.status)}</div>`;
+  html += `<div class="detail-label">Assigned</div><div>${esc(data.assigned_to || '(none)')}</div>`;
+  html += `<div class="detail-label">Created by</div><div>${esc(data.created_by)}</div>`;
+  if (data.parent_id) {
+    html += `<div class="detail-label">Parent</div><div><a onclick="openTicket(${data.parent_id})">#${data.parent_id}</a></div>`;
+  }
+  html += `<div class="detail-label">Created</div><div>${esc(data.created_at)}</div>`;
+  html += `<div class="detail-label">Updated</div><div>${esc(data.updated_at)}</div>`;
+  html += '</div>';
+
+  // Description
+  if (data.description) {
+    html += '<div class="detail-description">' + esc(data.description) + '</div>';
+  }
+
+  // Blockers
+  if (data.blocked_by && data.blocked_by.length) {
+    html += '<div class="detail-blockers"><h3 style="font-size:0.85rem;color:var(--text-dim);margin-bottom:0.5rem;">Blocked By</h3>';
+    data.blocked_by.forEach(b => {
+      html += `<div class="blocker-item">
+        ${statusBadge(b.status)}
+        <a onclick="openTicket(${b.blocked_by})">#${b.blocked_by}</a>
+        <span>${esc(b.title)}</span>
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  // Blocks
+  if (data.blocks && data.blocks.length) {
+    html += '<div class="detail-blockers"><h3 style="font-size:0.85rem;color:var(--text-dim);margin-bottom:0.5rem;">Blocks</h3>';
+    data.blocks.forEach(b => {
+      html += `<div class="blocker-item">
+        ${statusBadge(b.status)}
+        <a onclick="openTicket(${b.ticket_id})">#${b.ticket_id}</a>
+        <span>${esc(b.title)}</span>
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  // Children
+  if (data.children && data.children.length) {
+    html += '<div class="detail-children"><h3 style="font-size:0.85rem;color:var(--text-dim);margin-bottom:0.5rem;">Sub-tickets</h3>';
+    data.children.forEach(c => {
+      html += `<div class="blocker-item">
+        ${statusBadge(c.status)}
+        <a onclick="openTicket(${c.id})">#${c.id}</a>
+        <span>${esc(c.title)}</span>
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  // Comments
+  html += '<div class="comment-thread"><h3>Comments (' + (data.comments || []).length + ')</h3>';
+  if (data.comments && data.comments.length) {
+    data.comments.forEach(c => {
+      html += `<div class="comment-item">
+        <div class="comment-meta">${esc(c.author)} &middot; ${esc(c.created_at)}</div>
+        <div class="comment-body">${esc(c.body)}</div>
+      </div>`;
+    });
+  } else {
+    html += '<div style="font-size:0.85rem;color:var(--text-dim);">No comments yet.</div>';
+  }
+  html += `<div class="comment-form">
+    <input type="text" id="comment-input" placeholder="Add a comment..." onkeydown="if(event.key==='Enter')addComment(${data.id})">
+    <button onclick="addComment(${data.id})">Post</button>
+  </div>`;
+  html += '</div>';
+
+  // Actions
+  html += '<div class="detail-actions">';
+  if (data.status !== 'done') {
+    html += `<button onclick="completeTicket(${data.id})">Mark Done</button>`;
+    html += `<button class="secondary" onclick="showReassign(${data.id})">Reassign</button>`;
+  }
+  html += `<button class="secondary" onclick="showUpdateStatus(${data.id})">Change Status</button>`;
+  html += '</div>';
+
+  // Reassign inline form (hidden)
+  html += `<div id="reassign-form" style="display:none;margin-top:0.75rem;">
+    <div style="display:flex;gap:0.5rem;">
+      <input type="text" id="reassign-input" placeholder="agent-1, human, ...">
+      <button onclick="reassignTicket(${data.id})">Save</button>
+    </div>
+  </div>`;
+
+  // Change status inline form (hidden)
+  html += `<div id="status-form" style="display:none;margin-top:0.75rem;">
+    <div style="display:flex;gap:0.5rem;">
+      <select id="status-input">
+        <option value="open">open</option>
+        <option value="in_progress">in_progress</option>
+        <option value="done">done</option>
+      </select>
+      <button onclick="updateTicketStatus(${data.id})">Save</button>
+    </div>
+  </div>`;
+
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('ticket-modal').classList.add('active');
+}
+
+function closeModal() {
+  document.getElementById('ticket-modal').classList.remove('active');
+  currentModalTicketId = null;
+}
+
+// Close modal on overlay click
+document.getElementById('ticket-modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('ticket-modal')) closeModal();
+});
+
+// Close on Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeModal();
+});
+
+async function addComment(id) {
+  const input = document.getElementById('comment-input');
+  const body = input.value.trim();
+  if (!body) return;
+  await api('POST', '/api/tickets/' + id + '/comment', { body, author: 'human' });
+  openTicket(id); // refresh modal
+}
+
+async function completeTicket(id) {
+  await api('POST', '/api/tickets/' + id + '/complete');
+  closeModal();
+  refresh();
+}
+
+function showReassign(id) {
+  const form = document.getElementById('reassign-form');
+  form.style.display = form.style.display === 'none' ? 'block' : 'none';
+}
+
+async function reassignTicket(id) {
+  const val = document.getElementById('reassign-input').value.trim();
+  if (!val) return;
+  await api('POST', '/api/tickets/' + id + '/update', { assigned_to: val });
+  openTicket(id);
+}
+
+function showUpdateStatus(id) {
+  const form = document.getElementById('status-form');
+  form.style.display = form.style.display === 'none' ? 'block' : 'none';
+}
+
+async function updateTicketStatus(id) {
+  const val = document.getElementById('status-input').value;
+  await api('POST', '/api/tickets/' + id + '/update', { status: val });
+  openTicket(id);
+}
+
+// ---------------------------------------------------------------------------
+// Create ticket
+// ---------------------------------------------------------------------------
+
+function toggleCreateForm() {
+  document.getElementById('create-form').classList.toggle('active');
+}
+
+async function createTicket() {
+  const title = document.getElementById('new-title').value.trim();
+  if (!title) { alert('Title is required'); return; }
+
+  const body = {
+    title,
+    description: document.getElementById('new-desc').value.trim() || null,
+    parent_id: parseInt(document.getElementById('new-parent').value) || null,
+    assigned_to: document.getElementById('new-assign').value.trim() || null,
+    created_by: 'human',
+  };
+
+  const result = await api('POST', '/api/tickets', body);
+  if (result.id) {
+    document.getElementById('new-title').value = '';
+    document.getElementById('new-desc').value = '';
+    document.getElementById('new-parent').value = '';
+    document.getElementById('new-assign').value = '';
+    toggleCreateForm();
+    refresh();
+  } else {
+    alert(result.error || 'Failed to create ticket');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Agents tab
+// ---------------------------------------------------------------------------
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
+  return bytes.toFixed(1) + ' ' + units[i];
+}
+
+function formatUptime(created) {
+  if (!created) return '';
+  const secs = Math.floor(Date.now() / 1000) - created;
+  if (secs < 60) return secs + 's';
+  if (secs < 3600) return Math.floor(secs / 60) + 'm';
+  if (secs < 86400) return Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm';
+  return Math.floor(secs / 86400) + 'd ' + Math.floor((secs % 86400) / 3600) + 'h';
+}
+
+async function refreshAgents() {
+  try {
+    const data = await api('GET', '/api/agents');
+    const agents = data.agents || [];
+    const el = document.getElementById('agents-list');
+
+    if (!agents.length) {
+      el.innerHTML = '<div class="no-agents">' +
+        (data.error ? '<p>' + esc(data.error) + '</p>' : '<p>No containers found.</p>') +
+        '<p style="margin-top:0.5rem;">Make sure Docker is running and the socket is mounted.</p></div>';
+      return;
+    }
+
+    el.innerHTML = agents.map(a => {
+      const ticketInfo = a.current_ticket
+        ? `Working on <a onclick="openTicket(${a.current_ticket.ticket_id})">#${a.current_ticket.ticket_id}</a>: ${esc(a.current_ticket.ticket_title)}`
+        : 'Idle';
+
+      let usageHtml = '';
+      if (a.cpu_percent !== undefined) {
+        usageHtml = `<div class="usage-row">
+          <div class="usage-item usage-cpu">
+            <div class="usage-label">CPU: ${a.cpu_percent}%</div>
+            <div class="usage-bar"><div class="usage-bar-fill" style="width:${Math.min(a.cpu_percent, 100)}%"></div></div>
+          </div>
+          <div class="usage-item usage-mem">
+            <div class="usage-label">Memory: ${formatBytes(a.memory_usage)} / ${formatBytes(a.memory_limit)} (${a.memory_percent}%)</div>
+            <div class="usage-bar"><div class="usage-bar-fill" style="width:${Math.min(a.memory_percent, 100)}%"></div></div>
+          </div>
+        </div>`;
+      }
+
+      return `<div class="agent-card">
+        <div class="agent-header">
+          <div class="agent-name">${esc(a.name)}</div>
+          <div class="agent-state ${a.state}">${a.state}</div>
+        </div>
+        <div class="agent-meta">
+          <span>${a.status}</span>
+          <span>${ticketInfo}</span>
+          <span>Image: ${esc(a.image)}</span>
+        </div>
+        ${usageHtml}
+        <button class="agent-logs-btn secondary" onclick="toggleLogs('${esc(a.name)}')">Toggle Logs</button>
+        <div class="agent-logs" id="logs-${esc(a.name)}"></div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    console.error('Failed to refresh agents:', e);
+  }
+}
+
+async function toggleLogs(name) {
+  const el = document.getElementById('logs-' + name);
+  if (el.classList.contains('active')) {
+    el.classList.remove('active');
+    return;
+  }
+  el.textContent = 'Loading...';
+  el.classList.add('active');
+  try {
+    const data = await api('GET', '/api/agents/' + encodeURIComponent(name) + '/logs');
+    el.textContent = data.logs || '(no logs)';
+    el.scrollTop = el.scrollHeight;
+  } catch(e) {
+    el.textContent = 'Error loading logs';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Activity tab
+// ---------------------------------------------------------------------------
+
+function actionColor(action) {
+  const colors = {
+    created: 'var(--status-open)',
+    claimed: 'var(--status-in-progress)',
+    completed: 'var(--status-done)',
+    commented: 'var(--text)',
+    updated: 'var(--accent)',
+    blocker_added: 'var(--status-blocked)',
+    blocker_removed: 'var(--status-done)',
+    unclaimed: 'var(--text-dim)',
+  };
+  return colors[action] || 'var(--text)';
+}
+
+async function refreshActivity() {
+  try {
+    const data = await api('GET', '/api/activity?limit=100');
+    const feed = data.activity || [];
+    const el = document.getElementById('activity-feed');
+
+    if (!feed.length) {
+      el.innerHTML = '<p style="text-align:center;color:var(--text-dim);padding:3rem;">No activity yet.</p>';
+      return;
+    }
+
+    el.innerHTML = feed.map(a => {
+      const ticketLink = a.ticket_id
+        ? `<a onclick="openTicket(${a.ticket_id})">#${a.ticket_id}</a>`
+        : '';
+      return `<div class="activity-item">
+        <div class="activity-time">${esc(a.created_at || '')}</div>
+        <div class="activity-ticket">${ticketLink}</div>
+        <div class="activity-action" style="color:${actionColor(a.action)}">${esc(a.action)}</div>
+        <div class="activity-detail" title="${esc(a.detail || '')}">${esc(a.agent_id || '')}${a.agent_id && a.detail ? ' - ' : ''}${esc(a.detail || '')}</div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    console.error('Failed to refresh activity:', e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Refresh orchestration
+// ---------------------------------------------------------------------------
+
+async function refresh() {
+  refreshStats();
+  if (currentTab === 'tickets') refreshTickets();
+  else if (currentTab === 'agents') refreshAgents();
+  else if (currentTab === 'activity') refreshActivity();
+
+  // If modal is open, refresh it too
+  if (currentModalTicketId) {
+    // Don't refresh modal to avoid losing scroll/input state
+  }
+}
+
+function startAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(refresh, 5000);
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+function esc(s) {
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+refresh();
+startAutoRefresh();
+</script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+services:
+  agent-1:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    volumes:
+      - tickets-db:/tickets
+      - bare-repo:/repo.git
+      - ${HOME}/.claude:/host-claude-config:ro
+    environment:
+      - AGENT_ID=agent-1
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+    restart: unless-stopped
+
+  agent-2:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    volumes:
+      - tickets-db:/tickets
+      - bare-repo:/repo.git
+      - ${HOME}/.claude:/host-claude-config:ro
+    environment:
+      - AGENT_ID=agent-2
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+    restart: unless-stopped
+
+  agent-3:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    volumes:
+      - tickets-db:/tickets
+      - bare-repo:/repo.git
+      - ${HOME}/.claude:/host-claude-config:ro
+    environment:
+      - AGENT_ID=agent-3
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+    restart: unless-stopped
+
+  monitor:
+    build: ./monitor
+    ports:
+      - "3000:3000"
+    volumes:
+      - tickets-db:/tickets:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+volumes:
+  tickets-db:
+  bare-repo:
