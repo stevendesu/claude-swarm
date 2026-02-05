@@ -62,12 +62,15 @@ while true; do
         improvement. Output ONLY a title line and a description paragraph, \
         nothing else." \
         --output-format stream-json \
+        --verbose \
         --allowedTools "Read,Glob,Grep" \
         --max-turns 20 \
         2>&1 | tee "$PROPOSAL_LOG" > /tmp/proposal.txt
 
-      PROP_TITLE=$(head -1 /tmp/proposal.txt | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
-      PROP_DESC=$(tail -n +2 /tmp/proposal.txt | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+      # Extract the final text from stream-json (last line is type=result with .result field)
+      PROP_RESULT=$(tail -n 1 /tmp/proposal.txt | jq -r '.result // empty')
+      PROP_TITLE=$(echo "$PROP_RESULT" | head -1 | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+      PROP_DESC=$(echo "$PROP_RESULT" | tail -n +2 | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
 
       if [ -z "$PROP_TITLE" ]; then
         ticket --db "$TICKET_DB" comment "$PROPOSAL_ID" "Proposal generation produced no output — see $PROPOSAL_LOG" --author "$AGENT_ID"
@@ -145,6 +148,7 @@ TICKET COMMANDS (use --db $TICKET_DB for all commands):
 
 Read CLAUDE.md for full operating guidelines." \
     --output-format stream-json \
+    --verbose \
     --allowedTools "$ALLOWED_TOOLS" \
     --max-turns "$MAX_TURNS" \
     2>&1 | tee "$WORK_LOG"
@@ -198,6 +202,7 @@ Read CLAUDE.md for full operating guidelines." \
         Resolve all conflicts, keeping both sets of changes where possible. \
         After resolving, stage all resolved files with git add." \
         --output-format stream-json \
+        --verbose \
         --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
         --max-turns 10 \
         2>&1 | tee "$CONFLICT_LOG"
@@ -246,6 +251,7 @@ Read CLAUDE.md for full operating guidelines." \
           Resolve all conflicts, keeping both sets of changes where possible. \
           After resolving, stage all resolved files with git add." \
           --output-format stream-json \
+          --verbose \
           --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
           --max-turns 10 \
           2>&1 | tee "$CONFLICT_LOG"
