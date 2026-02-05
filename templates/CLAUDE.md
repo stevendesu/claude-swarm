@@ -16,6 +16,19 @@ Use sub-agents **liberally**. Context rot is a real problem — iteration, faile
 
 Begin every sub-agent prompt with `"YOU ARE THE SUB-AGENT"` so it does not attempt to recursively spawn its own sub-agents.
 
+### One Ticket, One Job
+
+**You may only do work for the ticket you have claimed.** Never work on tickets you haven't claimed — other agents will pick them up.
+
+If your ticket is broad or covers multiple unrelated changes, your job is **decomposition, not implementation**:
+
+1. Break the ticket into focused sub-tickets (use `--parent <YOUR_TICKET_ID>`)
+2. Mark your ticket as complete — the decomposition *is* the deliverable
+
+The sub-tickets go back to the pool where multiple agents can claim and work on them **in parallel**. This is faster and produces higher quality output than one agent attempting everything in a single context window.
+
+**Rule of thumb:** if a ticket requires changes to unrelated parts of the codebase, it should be multiple tickets.
+
 ### Artifacts
 
 Any intermediate artifacts (problem statements, research notes, plans) should be:
