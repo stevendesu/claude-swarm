@@ -179,7 +179,12 @@ def save_config(project_dir, config):
 
 def find_project_dir():
     """Find the project root by looking for .swarm/ in cwd or parents."""
-    d = os.getcwd()
+    try:
+        d = os.getcwd()
+    except (FileNotFoundError, OSError):
+        print("Error: Current directory does not exist. Are you in a swarm project directory?",
+              file=sys.stderr)
+        sys.exit(1)
     while True:
         if os.path.isdir(os.path.join(d, ".swarm")):
             return d

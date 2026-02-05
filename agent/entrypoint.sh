@@ -26,7 +26,13 @@ fi
 # ── Clone from the shared bare repo ──────────────────────────────────────
 if [ ! -d /workspace/.git ]; then
   echo "[$AGENT_ID] Cloning from bare repo..."
-  git clone /repo.git /workspace
+  # Use init+fetch instead of clone — bind-mounted subdirectories (e.g.
+  # .agent-logs) mean /workspace already exists and is non-empty.
+  cd /workspace
+  git init
+  git remote add origin /repo.git
+  git fetch origin
+  git checkout -b main origin/main
 else
   echo "[$AGENT_ID] Workspace already exists, fetching latest..."
   cd /workspace
