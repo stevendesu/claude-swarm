@@ -1,0 +1,14 @@
+  agent-__N__:
+    build:
+      context: .swarm
+      dockerfile: agent/Dockerfile
+    volumes:
+      - ./.swarm/tickets:/tickets
+      - ./.swarm/repo.git:/repo.git
+      - ${HOME}/.claude:/host-claude-config:ro
+    environment:
+      - AGENT_ID=agent-__N__
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+__NTFY_TOPIC_LINE__      - MAX_TURNS=__MAX_TURNS__
+      - ALLOWED_TOOLS=__ALLOWED_TOOLS__
+    restart: unless-stopped

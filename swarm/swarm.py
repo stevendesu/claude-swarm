@@ -35,52 +35,8 @@ PROJECT_ROOT_OF_SWARM = os.path.dirname(SWARM_SCRIPT_DIR)
 # Templates
 # ---------------------------------------------------------------------------
 
-CLAUDE_MD_TEMPLATE = """\
-# Agent Operating Manual
-
-This file guides autonomous AI agents working on this project.
-Read PROJECT.md for business context and product vision.
-
-## Ticket CLI Reference
-
-All commands use `ticket --db /tickets/tickets.db`.
-
-| Action | Command |
-|--------|---------|
-| Claim work | `claim-next --agent $AGENT_ID` |
-| Log progress | `comment <ID> "message" --author $AGENT_ID` |
-| Break down work | `create "Sub-task" --parent <ID> --created-by $AGENT_ID` |
-| Depends on other work | `create "Task" --blocked-by <PREREQUISITE_ID> --created-by $AGENT_ID` |
-| Mark blocked | `block <ID> --by <BLOCKER_ID>` (auto-releases the ticket) |
-| Ask humans | `create "Question" --assign human --blocked-by <YOUR_ID> --created-by $AGENT_ID` |
-| Propose improvement | `create "Suggestion" --assign human --type proposal --created-by $AGENT_ID` |
-| Release if stuck | `unclaim <ID>` |
-| Signal work finished | `complete <ID>` |
-
-## Ticket Types
-
-- **task** (default): Normal work for agents to complete
-- **question**: You need human input before continuing. Use `--blocked-by` to block your current ticket.
-- **proposal**: Suggesting an improvement. Human will approve/reject. No blocker needed.
-
-When creating a human-assigned ticket:
-- With `--blocked-by`: defaults to `question` type
-- Without `--blocked-by`: defaults to `proposal` type
-
-## Dependencies
-
-`--blocked-by <ID>` means "this new ticket cannot start until ticket <ID> is done." \
-Create foundational tickets first, then dependent tickets with `--blocked-by`.
-
-If your current ticket depends on unfinished work, run `ticket block <YOUR_ID> --by <PREREQUISITE_ID>` — \
-this automatically releases your ticket back to the pool. Once the prerequisite is done, \
-your ticket becomes claimable again.
-
-## Decision Making
-
-- **Technical decisions** (database, framework, architecture): Make the call, document in a comment
-- **Business decisions** (users, monetization, direction): Create a human-assigned blocking ticket
-"""
+# Template directory (contains CLAUDE.md, docker-compose.yml, agent-service.yml)
+TEMPLATES_DIR = os.path.join(PROJECT_ROOT_OF_SWARM, "templates")
 
 PROJECT_MD_TEMPLATE = """\
 # Project Context
@@ -155,6 +111,7 @@ SEED_TICKET_DESCRIPTION = (
 def generate_docker_compose(config):
     """Return a docker-compose.yml string based on the given config dict.
 
+    Reads templates from TEMPLATES_DIR and substitutes config values.
     The generated file is placed at the PROJECT root and all paths are
     relative to the project root (i.e. the directory that contains .swarm/).
     """
@@ -164,40 +121,34 @@ def generate_docker_compose(config):
     max_turns = config.get("max_turns", 50)
     allowed_tools = config.get("allowed_tools", "Bash,Read,Write,Edit,Glob,Grep")
 
-    lines = ["services:"]
+    # Read templates
+    compose_template_path = os.path.join(TEMPLATES_DIR, "docker-compose.yml")
+    agent_template_path = os.path.join(TEMPLATES_DIR, "agent-service.yml")
 
+    with open(compose_template_path, "r") as f:
+        compose_template = f.read()
+    with open(agent_template_path, "r") as f:
+        agent_template = f.read()
+
+    # Generate agent services
+    agent_services = []
     for i in range(1, agent_count + 1):
-        name = f"agent-{i}"
-        lines.append(f"  {name}:")
-        lines.append("    build:")
-        lines.append("      context: .swarm")
-        lines.append("      dockerfile: agent/Dockerfile")
-        lines.append("    volumes:")
-        lines.append("      - ./.swarm/tickets:/tickets")
-        lines.append("      - ./.swarm/repo.git:/repo.git")
-        lines.append("      - ${HOME}/.claude:/host-claude-config:ro")
-        lines.append("    environment:")
-        lines.append(f"      - AGENT_ID={name}")
-        lines.append("      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}")
+        service = agent_template.replace("__N__", str(i))
+        service = service.replace("__MAX_TURNS__", str(max_turns))
+        service = service.replace("__ALLOWED_TOOLS__", allowed_tools)
+        # Conditionally include NTFY_TOPIC line
         if ntfy_topic:
-            lines.append(f"      - NTFY_TOPIC={ntfy_topic}")
-        lines.append(f"      - MAX_TURNS={max_turns}")
-        lines.append(f"      - ALLOWED_TOOLS={allowed_tools}")
-        lines.append("    restart: unless-stopped")
-        lines.append("")
+            service = service.replace("__NTFY_TOPIC_LINE__", f"      - NTFY_TOPIC={ntfy_topic}\n")
+        else:
+            service = service.replace("__NTFY_TOPIC_LINE__", "")
+        agent_services.append(service)
 
-    # Monitor service — only include if monitor/ was copied into .swarm/
-    lines.append("  monitor:")
-    lines.append("    build: ./.swarm/monitor")
-    lines.append("    ports:")
-    lines.append('      - "${MONITOR_PORT:-' + str(monitor_port) + '}:3000"')
-    lines.append("    volumes:")
-    lines.append("      - ./.swarm/tickets:/tickets")
-    lines.append("      - /var/run/docker.sock:/var/run/docker.sock:ro")
-    lines.append("    restart: unless-stopped")
-    lines.append("")
+    # Combine into final compose file
+    agent_services_block = "\n".join(agent_services)
+    result = compose_template.replace("# __AGENT_SERVICES__", agent_services_block)
+    result = result.replace("__MONITOR_PORT__", str(monitor_port))
 
-    return "\n".join(lines) + "\n"
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -356,12 +307,12 @@ def cmd_init(args):
         f.write(compose_content)
     print("  Generated docker-compose.yml")
 
-    # ── 9. Generate CLAUDE.md at project root ───────────────────────────
+    # ── 9. Copy CLAUDE.md from template to project root ─────────────────
     claude_md_path = os.path.join(project_dir, "CLAUDE.md")
+    claude_md_template = os.path.join(TEMPLATES_DIR, "CLAUDE.md")
     if not os.path.isfile(claude_md_path):
-        with open(claude_md_path, "w") as f:
-            f.write(CLAUDE_MD_TEMPLATE)
-        print("  Generated CLAUDE.md")
+        shutil.copy2(claude_md_template, claude_md_path)
+        print("  Copied CLAUDE.md")
     else:
         print("  CLAUDE.md already exists — skipping")
 
