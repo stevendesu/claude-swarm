@@ -526,14 +526,17 @@ def extract_oauth_token():
         return None
 
 
-def unclaim_all_in_progress(project_dir):
-    """Reset all in_progress tickets to open status.
+def release_agent_tickets(project_dir):
+    """Release all non-done tickets assigned to agents (non-human).
 
-    Called on swarm start to clean up tickets that were left in_progress
-    when the swarm was previously stopped (e.g., container crash, scale-down,
-    OAuth expiry, OOM).
+    Called on swarm start. At startup no agent is running yet, so any ticket
+    still assigned to an agent is orphaned — regardless of status. This covers
+    in_progress (normal crash), open (proposal path crash), and ready
+    (push-finalization crash).
 
-    Returns the number of tickets that were reset.
+    Human-assigned tickets are left untouched.
+
+    Returns the number of tickets that were released.
     """
     tickets_db = os.path.join(project_dir, ".swarm", "tickets", "tickets.db")
     if not os.path.isfile(tickets_db):
@@ -541,33 +544,34 @@ def unclaim_all_in_progress(project_dir):
 
     conn = sqlite3.connect(tickets_db, timeout=10)
 
-    # Find affected tickets first (so we can log activity for each)
-    in_progress = conn.execute(
-        "SELECT id, assigned_to FROM tickets WHERE status = 'in_progress'"
+    # Find non-done tickets assigned to agents (not human)
+    orphaned = conn.execute(
+        "SELECT id, assigned_to, status FROM tickets "
+        "WHERE assigned_to IS NOT NULL "
+        "AND assigned_to != 'human' "
+        "AND status != 'done'"
     ).fetchall()
 
-    if not in_progress:
+    if not orphaned:
         conn.close()
         return 0
 
-    # Log activity for each ticket before updating
-    for ticket_id, agent_id in in_progress:
+    # Log activity and release each ticket
+    for ticket_id, agent_id, status in orphaned:
         conn.execute(
             "INSERT INTO activity_log (ticket_id, agent_id, action, detail) "
             "VALUES (?, ?, 'unclaimed', 'Auto-released on swarm start')",
             (ticket_id, agent_id)
         )
-
-    # Update all at once
-    conn.execute("""
-        UPDATE tickets
-        SET status = 'open', assigned_to = NULL, updated_at = datetime('now')
-        WHERE status = 'in_progress'
-    """)
+        conn.execute(
+            "UPDATE tickets SET assigned_to = NULL, status = 'open', "
+            "updated_at = datetime('now') WHERE id = ?",
+            (ticket_id,)
+        )
 
     conn.commit()
     conn.close()
-    return len(in_progress)
+    return len(orphaned)
 
 
 def cmd_start(args):
@@ -583,10 +587,10 @@ def cmd_start(args):
             f.write(compose_content)
         print("Regenerated docker-compose.yml from config.")
 
-    # Unclaim any stuck in_progress tickets from previous run
-    count = unclaim_all_in_progress(project_dir)
+    # Release any tickets still assigned to agents from previous run
+    count = release_agent_tickets(project_dir)
     if count > 0:
-        print(f"Released {count} stuck in_progress ticket(s) from previous run.")
+        print(f"Released {count} orphaned agent ticket(s) from previous run.")
 
     # Run database migrations before starting
     ticket_py = os.path.join(project_dir, ".swarm", "ticket", "ticket.py")

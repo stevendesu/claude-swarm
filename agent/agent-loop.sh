@@ -31,6 +31,18 @@ trap cleanup SIGTERM SIGINT
 mkdir -p "$LOG_DIR"
 cd "$WORKSPACE"
 
+# ── Recover from previous crash: unclaim any orphaned tickets ──────────────
+# If this agent previously crashed, tickets may still be assigned to it.
+# Docker restart and check-alive.sh restarts bypass `swarm start`, so the
+# global unclaim-all doesn't run. Clean up per-agent here instead.
+ORPHANS=$(ticket --db "$TICKET_DB" list --assigned-to "$AGENT_ID" --status open,in_progress --format json 2>/dev/null || echo "[]")
+for ORPHAN_ID in $(echo "$ORPHANS" | jq -r '.[].id'); do
+    ticket --db "$TICKET_DB" comment "$ORPHAN_ID" \
+        "Agent restarted — releasing orphaned ticket" --author "$AGENT_ID" || true
+    ticket --db "$TICKET_DB" unclaim "$ORPHAN_ID" || true
+    echo "[$AGENT_ID] Released orphaned ticket #$ORPHAN_ID"
+done
+
 while true; do
   # Try to claim a ticket
   TICKET_JSON=$(ticket --db "$TICKET_DB" claim-next --agent "$AGENT_ID" --format json 2>/dev/null || echo "")
@@ -43,6 +55,7 @@ while true; do
       # Queue is completely empty — propose improvements
       PROPOSAL_ID=$(ticket --db "$TICKET_DB" create "Reviewing codebase for improvements" \
         --assign "$AGENT_ID" --created-by "$AGENT_ID")
+      CURRENT_TICKET_ID="$PROPOSAL_ID"  # Track for graceful shutdown
 
       PROPOSAL_LOG="$LOG_DIR/proposal-$(date +%Y%m%d-%H%M%S).log"
       claude -p "Review the codebase. Identify the single most impactful \
@@ -53,8 +66,8 @@ while true; do
         --max-turns 20 \
         2>&1 | tee "$PROPOSAL_LOG" > /tmp/proposal.txt
 
-      PROP_TITLE=$(head -1 /tmp/proposal.txt | xargs)
-      PROP_DESC=$(tail -n +2 /tmp/proposal.txt | xargs)
+      PROP_TITLE=$(head -1 /tmp/proposal.txt | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+      PROP_DESC=$(tail -n +2 /tmp/proposal.txt | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
 
       if [ -z "$PROP_TITLE" ]; then
         ticket --db "$TICKET_DB" comment "$PROPOSAL_ID" "Proposal generation produced no output — see $PROPOSAL_LOG" --author "$AGENT_ID"
@@ -70,6 +83,8 @@ while true; do
           --assign human \
           --status open
       fi
+
+      CURRENT_TICKET_ID=""  # Proposal handed off to human, no longer ours
 
       # Notify human
       if [ -n "$NTFY_TOPIC" ]; then
