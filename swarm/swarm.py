@@ -59,7 +59,7 @@ PROJECT_MD_TEMPLATE = """\
 
 INTERVIEW_SYSTEM_PROMPT = """\
 You are conducting a short interview to understand a new project's business context. \
-Your goal is to populate PROJECT.md with what you learn.
+Your goal is to populate PROJECT.md and create a verify.sh script.
 
 Ask about these topics (one or two at a time, conversationally):
 1. What does this product do?
@@ -68,15 +68,38 @@ Ask about these topics (one or two at a time, conversationally):
 4. Are there hard constraints (regulatory, platform, timeline)?
 5. What does success look like?
 
+After those questions, propose a tech stack:
+6. Based on what you've learned, propose a language and framework (e.g. "Python with FastAPI", \
+"TypeScript with Next.js"). Give brief reasoning (1-2 sentences). Ask the human to confirm or suggest changes.
+
 Guidelines:
 - Be conversational and brief. Don't overwhelm with questions.
 - It's fine to combine or skip questions based on what the human volunteers.
 - When you have enough context, write PROJECT.md at the project root using the Write tool.
 - Keep PROJECT.md concise — a few clear paragraphs, not an essay.
 - Use the same five section headings that already exist in the placeholder PROJECT.md.
-- Do NOT make technical decisions (database, framework, architecture). Agents decide those.
-- After writing PROJECT.md, call the mcp__interview__end_interview tool to automatically end the session. \
-Do NOT use the Skill tool — use the MCP tool directly.
+- Do NOT make architectural decisions beyond the core language/framework for verify.sh.
+
+After writing PROJECT.md, write a verify.sh script at the project root. This script:
+- Runs linting and/or tests appropriate for the confirmed tech stack
+- Exits 0 if the project isn't set up yet (e.g. no package.json, no requirements.txt)
+- Installs lint/test tools if they're missing (e.g. pip install, npm install)
+- Exits 0 on success, non-zero on failure
+- Starts with #!/bin/bash and set -euo pipefail
+
+Example verify.sh for a Python project:
+```bash
+#!/bin/bash
+set -euo pipefail
+# Exit successfully if project isn't set up yet
+[ -f requirements.txt ] || exit 0
+pip install -q ruff pytest 2>/dev/null || true
+ruff check .
+python -m pytest --tb=short -q 2>/dev/null || true
+```
+
+After writing both PROJECT.md and verify.sh, call the mcp__interview__end_interview tool to \
+automatically end the session. Do NOT use the Skill tool — use the MCP tool directly.
 """
 
 DEFAULT_CONFIG = {
@@ -85,6 +108,7 @@ DEFAULT_CONFIG = {
     "allowed_tools": "Bash,Read,Write,Edit,Glob,Grep",
     "max_turns": 50,
     "monitor_port": 3000,
+    "verify_retries": 2,
 }
 
 SEED_TICKET_TITLE = (
@@ -120,6 +144,7 @@ def generate_docker_compose(config):
     ntfy_topic = config.get("ntfy_topic", "")
     max_turns = config.get("max_turns", 50)
     allowed_tools = config.get("allowed_tools", "Bash,Read,Write,Edit,Glob,Grep")
+    verify_retries = config.get("verify_retries", 2)
 
     # Read templates
     compose_template_path = os.path.join(TEMPLATES_DIR, "docker-compose.yml")
@@ -136,6 +161,7 @@ def generate_docker_compose(config):
         service = agent_template.replace("__N__", str(i))
         service = service.replace("__MAX_TURNS__", str(max_turns))
         service = service.replace("__ALLOWED_TOOLS__", allowed_tools)
+        service = service.replace("__VERIFY_RETRIES__", str(verify_retries))
         # Conditionally include NTFY_TOPIC line
         if ntfy_topic:
             service = service.replace("__NTFY_TOPIC_LINE__", f"      - NTFY_TOPIC={ntfy_topic}\n")
@@ -465,10 +491,15 @@ def cmd_init(args):
             os.remove(sentinel_path)
         os.unlink(mcp_config_file.name)
 
-        # Commit updated PROJECT.md to the bare repo so agents see it
-        subprocess.run(["git", "-C", project_dir, "add", "PROJECT.md"], capture_output=True)
+        # Make verify.sh executable (Write tool doesn't set permissions)
+        verify_sh_path = os.path.join(project_dir, "verify.sh")
+        if os.path.isfile(verify_sh_path):
+            os.chmod(verify_sh_path, 0o755)
+
+        # Commit updated PROJECT.md and verify.sh to the bare repo so agents see them
+        subprocess.run(["git", "-C", project_dir, "add", "PROJECT.md", "verify.sh"], capture_output=True)
         commit_result = subprocess.run(
-            ["git", "-C", project_dir, "commit", "-m", "Update PROJECT.md from interview (swarm init)"],
+            ["git", "-C", project_dir, "commit", "-m", "Add PROJECT.md and verify.sh from interview (swarm init)"],
             capture_output=True, text=True, env=git_env,
         )
         if commit_result.returncode == 0:
@@ -482,7 +513,7 @@ def cmd_init(args):
                 ["git", "-C", project_dir, "push", bare_repo_path, f"HEAD:{branch}"],
                 capture_output=True, text=True,
             )
-            print("  Updated bare repo with PROJECT.md from interview")
+            print("  Updated bare repo with PROJECT.md and verify.sh from interview")
 
         phase2_ran = True
     else:

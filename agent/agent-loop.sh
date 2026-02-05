@@ -8,7 +8,37 @@ TICKET_DB="/tickets/tickets.db"
 NTFY_TOPIC="${NTFY_TOPIC:-}"
 MAX_TURNS="${MAX_TURNS:-50}"
 ALLOWED_TOOLS="${ALLOWED_TOOLS:-Bash,Read,Write,Edit,Glob,Grep}"
+VERIFY_RETRIES="${VERIFY_RETRIES:-2}"
 LOG_DIR="/workspace/.agent-logs"
+
+# ── Verification gate ────────────────────────────────────────────────────────
+# Runs checks after Claude finishes work but before git commit.
+# Returns error output on stdout (empty string = pass).
+run_verification() {
+  local errors=""
+
+  # Universal check: scan for merge conflict markers in tracked files
+  local conflict_files
+  conflict_files=$(git diff --name-only HEAD 2>/dev/null || true)
+  conflict_files="$conflict_files"$'\n'"$(git diff --cached --name-only 2>/dev/null || true)"
+  conflict_files="$conflict_files"$'\n'"$(git ls-files --others --exclude-standard 2>/dev/null || true)"
+
+  for f in $(echo "$conflict_files" | sort -u | grep -v '^$'); do
+    if [ -f "$f" ] && grep -qE '^(<{7}|>{7})' "$f" 2>/dev/null; then
+      errors="${errors}Conflict markers found in $f"$'\n'
+    fi
+  done
+
+  # Project-specific: run verify.sh if it exists and is executable
+  if [ -x "./verify.sh" ]; then
+    local verify_output
+    if ! verify_output=$(./verify.sh 2>&1); then
+      errors="${errors}verify.sh failed:"$'\n'"${verify_output}"$'\n'
+    fi
+  fi
+
+  echo -n "$errors"
+}
 
 # ── Proposal flow ────────────────────────────────────────────────────────────
 # Runs Claude in read-only mode to generate a proposal, then reassigns the
@@ -171,15 +201,6 @@ Read CLAUDE.md for full operating guidelines." \
   ticket --db "$TICKET_DB" comment "$TICKET_ID" "Claude session log: $WORK_LOG ($(wc -l < "$WORK_LOG") lines)" --author "$AGENT_ID"
 
   # Post-agent git workflow
-  # Ensure any uncommitted changes are on a branch (not detached HEAD)
-  CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
-  if [ -z "$CURRENT_BRANCH" ]; then
-    git checkout -B "$BRANCH" 2>/dev/null || true
-  fi
-  if [ -n "$(git status --porcelain)" ]; then
-    git add -A
-    git commit -m "ticket-${TICKET_ID}: ${TITLE}"
-  fi
 
   # Check if the agent released the ticket (blocked or unclaimed)
   TICKET_STATE_JSON=$(ticket --db "$TICKET_DB" show "$TICKET_ID" --format json 2>/dev/null || echo "{}")
@@ -197,6 +218,57 @@ Read CLAUDE.md for full operating guidelines." \
     git reset --hard origin/main 2>/dev/null || true
     git clean -fd 2>/dev/null || true
     continue
+  fi
+
+  # Ensure any uncommitted changes are on a branch (not detached HEAD)
+  CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
+  if [ -z "$CURRENT_BRANCH" ]; then
+    git checkout -B "$BRANCH" 2>/dev/null || true
+  fi
+
+  # ── Verification gate ──────────────────────────────────────────────
+  # Run checks before committing. If they fail, give Claude a chance to fix.
+  if [ -n "$(git status --porcelain)" ]; then
+    VERIFY_ERRORS=$(run_verification)
+    VERIFY_ATTEMPT=0
+    while [ -n "$VERIFY_ERRORS" ] && [ "$VERIFY_ATTEMPT" -lt "$VERIFY_RETRIES" ]; do
+      VERIFY_ATTEMPT=$((VERIFY_ATTEMPT + 1))
+      ticket --db "$TICKET_DB" comment "$TICKET_ID" \
+        "Verification failed (attempt $VERIFY_ATTEMPT/$VERIFY_RETRIES): $VERIFY_ERRORS" --author "$AGENT_ID"
+
+      VERIFY_LOG="$LOG_DIR/ticket-${TICKET_ID}-verify-$(date +%Y%m%d-%H%M%S).log"
+      claude -p "You are autonomous agent $AGENT_ID fixing verification errors for ticket #$TICKET_ID.
+
+TICKET: $TITLE
+DESCRIPTION: $DESC
+
+The following verification checks failed. Fix all errors:
+
+$VERIFY_ERRORS" \
+        --output-format stream-json \
+        --verbose \
+        --allowedTools "$ALLOWED_TOOLS" \
+        --max-turns 10 \
+        2>&1 | tee "$VERIFY_LOG"
+
+      VERIFY_ERRORS=$(run_verification)
+    done
+
+    if [ -n "$VERIFY_ERRORS" ]; then
+      ticket --db "$TICKET_DB" comment "$TICKET_ID" \
+        "Verification still failing after $VERIFY_RETRIES retries, releasing ticket: $VERIFY_ERRORS" --author "$AGENT_ID"
+      ticket --db "$TICKET_DB" unclaim "$TICKET_ID"
+      git checkout main 2>/dev/null || true
+      for branch in $(git for-each-ref --format='%(refname:short)' refs/heads/ | grep -v '^main$'); do
+        git branch -D "$branch" >/dev/null 2>&1 || true
+      done
+      git reset --hard origin/main 2>/dev/null || true
+      git clean -fd 2>/dev/null || true
+      continue
+    fi
+
+    git add -A
+    git commit -m "ticket-${TICKET_ID}: ${TITLE}"
   fi
 
   # Merge all local branches with new commits into main

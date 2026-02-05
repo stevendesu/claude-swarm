@@ -47,6 +47,7 @@ Each agent container expects these mounts:
 | `NTFY_TOPIC` | No | `""` | [ntfy.sh](https://ntfy.sh) topic for push notifications. If set, the agent sends notifications when proposing improvements. |
 | `MAX_TURNS` | No | `50` | Maximum number of turns Claude Code can take per ticket. |
 | `ALLOWED_TOOLS` | No | `Bash,Read,Write,Edit,Glob,Grep` | Comma-separated list of tools Claude Code is allowed to use. |
+| `VERIFY_RETRIES` | No | `2` | Number of times to retry verification (lint/test) failures before unclaiming the ticket. |
 
 ## Entrypoint Startup Sequence
 
@@ -70,9 +71,10 @@ The script runs an infinite loop with this cycle:
 2. **Claim a ticket** -- calls `ticket claim-next` to atomically grab the next available open ticket.
 3. **Branch** -- creates a `ticket-<ID>` branch off main.
 4. **Invoke Claude Code** -- passes the ticket title, description, comments, and parent context as a prompt. Claude does the actual coding work.
-5. **Commit and push** -- after Claude finishes, the script stages all changes, commits with a `ticket-<ID>: <title>` message, and pushes the branch.
-6. **Merge to main** -- fast-forward merges the branch into main and pushes. On success the ticket is marked complete; on failure it is unclaimed so another agent (or a human) can retry.
-7. **Repeat**.
+5. **Verification gate** -- scans for merge conflict markers and runs `./verify.sh` if present. On failure, invokes Claude to fix errors (up to `VERIFY_RETRIES` times). If still failing, unclaims the ticket.
+6. **Commit and push** -- after verification passes, the script stages all changes, commits with a `ticket-<ID>: <title>` message, and pushes the branch.
+7. **Merge to main** -- fast-forward merges the branch into main and pushes. On success the ticket is marked complete; on failure it is unclaimed so another agent (or a human) can retry.
+8. **Repeat**.
 
 ### When No Tickets Are Available
 
@@ -106,6 +108,7 @@ If `git push` is rejected (another agent merged first), the script:
 ## Design Principles
 
 - **Git is handled by bash, not Claude.** The script owns branching, committing, pushing, rebasing, and merging. Claude only writes code.
+- **Verification before commit.** After Claude finishes, `run_verification()` checks for conflict markers and runs `./verify.sh` (project-specific linting/tests). Failures trigger Claude retries before the ticket is unclaimed.
 - **Claude is invoked for merge conflicts** because resolving conflicts requires semantic understanding of both sides of the change.
 - **Rebase-and-retry** handles the case where multiple agents push concurrently.
 - **Unclaim on failure** returns tickets to the pool so they are not permanently stuck.
