@@ -573,6 +573,9 @@ let currentModalTicketId = null;
 // Agent panel state: { agentName: { tab: 'container-logs'|'sessions'|'session-viewer'|null, sessionFile: string|null, cachedHtml: string|null } }
 const agentPanelState = {};
 
+// Maps container name → Docker Compose service name (matches AGENT_ID and log directory names)
+const agentServiceMap = {};
+
 // ---------------------------------------------------------------------------
 // API helpers
 // ---------------------------------------------------------------------------
@@ -611,7 +614,7 @@ async function refreshStats() {
   try {
     const data = await api('GET', '/api/stats');
     const el = document.getElementById('header-stats');
-    el.innerHTML = `
+    const html = `
       <div class="stat-item"><span class="stat-dot" style="background:var(--status-open)"></span> ${data.open || 0} open</div>
       <div class="stat-item"><span class="stat-dot" style="background:var(--status-in-progress)"></span> ${data.in_progress || 0} active</div>
       <div class="stat-item"><span class="stat-dot" style="background:var(--status-ready)"></span> ${data.ready || 0} ready</div>
@@ -619,6 +622,7 @@ async function refreshStats() {
       <div class="stat-item"><span class="stat-dot" style="background:var(--status-human)"></span> ${data.needs_human || 0} human</div>
       <div class="stat-item"><span class="stat-dot" style="background:var(--status-done)"></span> ${data.done || 0} done</div>
     `;
+    updateIfChanged(el, html);
   } catch(e) { /* silently retry next cycle */ }
 }
 
@@ -681,7 +685,7 @@ async function refreshTickets() {
     const doneTickets = (doneData.tickets || []).slice(-20).reverse();
 
     const board = document.getElementById('ticket-board');
-    board.innerHTML =
+    let html =
       renderTicketGroup('Needs Human', needsHuman) +
       renderTicketGroup('In Progress', inProgress) +
       renderTicketGroup('Work Complete', workComplete) +
@@ -690,8 +694,9 @@ async function refreshTickets() {
       renderTicketGroup('Recently Done', doneTickets);
 
     if (!tickets.length && !doneTickets.length) {
-      board.innerHTML = '<p style="text-align:center;color:var(--text-dim);padding:3rem;">No tickets yet. Create one to get started.</p>';
+      html = '<p style="text-align:center;color:var(--text-dim);padding:3rem;">No tickets yet. Create one to get started.</p>';
     }
+    updateIfChanged(board, html);
   } catch(e) {
     console.error('Failed to refresh tickets:', e);
   }
@@ -1047,21 +1052,28 @@ function formatUptime(created) {
   return Math.floor(secs / 86400) + 'd ' + Math.floor((secs % 86400) / 3600) + 'h';
 }
 
+let _agentsInFlight = false;
 async function refreshAgents() {
+  if (_agentsInFlight) return;
+  _agentsInFlight = true;
   try {
     const data = await api('GET', '/api/agents');
     const agents = data.agents || [];
     const el = document.getElementById('agents-list');
 
     if (!agents.length) {
-      el.innerHTML = '<div class="no-agents">' +
+      updateIfChanged(el, '<div class="no-agents">' +
         (data.error ? '<p>' + esc(data.error) + '</p>' : '<p>No containers found.</p>') +
-        '<p style="margin-top:0.5rem;">Make sure Docker is running and the socket is mounted.</p></div>';
+        '<p style="margin-top:0.5rem;">Make sure Docker is running and the socket is mounted.</p></div>');
       return;
     }
 
-    el.innerHTML = agents.map(a => {
+    // Build service name map for sessions API lookups
+    agents.forEach(a => { agentServiceMap[a.name] = a.service || a.name; });
+
+    const newHtml = agents.map(a => {
       const safeName = esc(a.name);
+      const displayName = esc(a.service || a.name);
       const state = agentPanelState[a.name] || {};
       const activeTab = state.tab || null;
 
@@ -1088,7 +1100,7 @@ async function refreshAgents() {
 
       return `<div class="agent-card">
         <div class="agent-header">
-          <div class="agent-name">${safeName}</div>
+          <div class="agent-name">${displayName}</div>
           <div class="agent-state ${a.state}">${a.state}</div>
         </div>
         <div class="agent-meta">
@@ -1110,6 +1122,16 @@ async function refreshAgents() {
       </div>`;
     }).join('');
 
+    // Save scroll positions of open panels before DOM replacement
+    for (const [agentName, state] of Object.entries(agentPanelState)) {
+      if (!state || !state.tab) continue;
+      const panelId = state.tab === 'container-logs' ? 'panel-logs-' + agentName : 'panel-sessions-' + agentName;
+      const panel = document.getElementById(panelId);
+      if (panel) state.scrollTop = panel.scrollTop;
+    }
+
+    if (!updateIfChanged(el, newHtml)) return; // No changes, skip panel restoration
+
     // Restore panel content for agents with open panels
     for (const a of agents) {
       const state = agentPanelState[a.name];
@@ -1120,12 +1142,16 @@ async function refreshAgents() {
       } else if (state.tab === 'sessions') {
         fetchSessionList(a.name);
       } else if (state.tab === 'session-viewer' && state.cachedHtml) {
-        const el = document.getElementById('sessions-content-' + a.name);
-        if (el) el.innerHTML = state.cachedHtml;
+        const contentEl = document.getElementById('sessions-content-' + a.name);
+        if (contentEl) contentEl.innerHTML = state.cachedHtml;
+        const panel = document.getElementById('panel-sessions-' + a.name);
+        if (panel && state.scrollTop !== undefined) panel.scrollTop = state.scrollTop;
       }
     }
   } catch(e) {
     console.error('Failed to refresh agents:', e);
+  } finally {
+    _agentsInFlight = false;
   }
 }
 
@@ -1169,11 +1195,22 @@ function toggleAgentTab(name, tab) {
 async function fetchContainerLogs(name) {
   const el = document.getElementById('logs-content-' + name);
   if (!el) return;
-  el.textContent = 'Loading...';
+  const state = agentPanelState[name];
+  const savedScroll = state ? state.scrollTop : undefined;
+  const isInitialLoad = !el.textContent || el.textContent === 'Loading...';
+  if (isInitialLoad) el.textContent = 'Loading...';
   try {
     const data = await api('GET', '/api/agents/' + encodeURIComponent(name) + '/logs');
     el.textContent = data.logs || '(no logs)';
-    el.scrollTop = el.scrollHeight;
+    const panel = document.getElementById('panel-logs-' + name);
+    if (panel) {
+      if (savedScroll !== undefined && !isInitialLoad) {
+        panel.scrollTop = savedScroll;
+      } else {
+        panel.scrollTop = panel.scrollHeight;
+      }
+    }
+    if (state) delete state.scrollTop;
   } catch(e) {
     el.textContent = 'Error loading logs';
   }
@@ -1182,9 +1219,15 @@ async function fetchContainerLogs(name) {
 async function fetchSessionList(name) {
   const el = document.getElementById('sessions-content-' + name);
   if (!el) return;
-  el.innerHTML = '<div style="color:var(--text-dim);padding:0.5rem;">Loading sessions...</div>';
+  const state = agentPanelState[name];
+  const savedScroll = state ? state.scrollTop : undefined;
+  const isInitialLoad = !el.innerHTML || el.innerHTML === '';
+  if (isInitialLoad) {
+    el.innerHTML = '<div style="color:var(--text-dim);padding:0.5rem;">Loading sessions...</div>';
+  }
   try {
-    const data = await api('GET', '/api/agents/' + encodeURIComponent(name) + '/sessions');
+    const service = agentServiceMap[name] || name;
+    const data = await api('GET', '/api/agents/' + encodeURIComponent(service) + '/sessions');
     const sessions = data.sessions || [];
     if (!sessions.length) {
       el.innerHTML = '<div style="color:var(--text-dim);padding:0.5rem;">No session logs found.</div>';
@@ -1201,6 +1244,9 @@ async function fetchSessionList(name) {
         <span class="session-meta"><span>${size}</span><span>${date}</span></span>
       </li>`;
     }).join('') + '</ul>';
+    const panel = document.getElementById('panel-sessions-' + name);
+    if (panel && savedScroll !== undefined) panel.scrollTop = savedScroll;
+    if (state) delete state.scrollTop;
   } catch(e) {
     el.innerHTML = '<div style="color:var(--text-dim);padding:0.5rem;">Error loading sessions.</div>';
   }
@@ -1212,7 +1258,8 @@ async function openSessionLog(name, filename) {
   el.innerHTML = '<div style="color:var(--text-dim);padding:0.5rem;">Loading session...</div>';
 
   try {
-    const data = await api('GET', '/api/agents/' + encodeURIComponent(name) + '/sessions/' + encodeURIComponent(filename));
+    const service = agentServiceMap[name] || name;
+    const data = await api('GET', '/api/agents/' + encodeURIComponent(service) + '/sessions/' + encodeURIComponent(filename));
     const entries = data.entries || [];
 
     let html = `<button class="session-back-btn secondary" onclick="backToSessionList('${esc(name)}')">Back to list</button>`;
@@ -1269,11 +1316,11 @@ async function refreshActivity() {
     const el = document.getElementById('activity-feed');
 
     if (!feed.length) {
-      el.innerHTML = '<p style="text-align:center;color:var(--text-dim);padding:3rem;">No activity yet.</p>';
+      updateIfChanged(el, '<p style="text-align:center;color:var(--text-dim);padding:3rem;">No activity yet.</p>');
       return;
     }
 
-    el.innerHTML = feed.map(a => {
+    const html = feed.map(a => {
       const ticketLink = a.ticket_id
         ? `<a onclick="openTicket(${a.ticket_id})">#${a.ticket_id}</a>`
         : '';
@@ -1284,6 +1331,7 @@ async function refreshActivity() {
         <div class="activity-detail" title="${esc(a.detail || '')}">${esc(a.agent_id || '')}${a.agent_id && a.detail ? ' - ' : ''}${esc(a.detail || '')}</div>
       </div>`;
     }).join('');
+    updateIfChanged(el, html);
   } catch(e) {
     console.error('Failed to refresh activity:', e);
   }
@@ -1313,6 +1361,15 @@ function startAutoRefresh() {
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
+
+// Only update innerHTML if content actually changed; preserve scroll position
+function updateIfChanged(el, newHtml) {
+  if (el.innerHTML === newHtml) return false;
+  const scrollY = window.scrollY;
+  el.innerHTML = newHtml;
+  window.scrollTo(0, scrollY);
+  return true;
+}
 
 function esc(s) {
   if (s === null || s === undefined) return '';

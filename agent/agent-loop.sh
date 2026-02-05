@@ -56,9 +56,9 @@ run_proposal_flow() {
     --verbose \
     --allowedTools "Read,Glob,Grep" \
     --max-turns 20 \
-    2>&1 | tee "$PROPOSAL_LOG" > /tmp/proposal.txt
+    2>&1 > "$PROPOSAL_LOG"
 
-  PROP_RESULT=$(tail -n 1 /tmp/proposal.txt | jq -r '.result // empty')
+  PROP_RESULT=$(tail -n 1 "$PROPOSAL_LOG" | jq -r '.result // empty')
   PROP_TITLE=$(echo "$PROP_RESULT" | head -1 | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
   PROP_DESC=$(echo "$PROP_RESULT" | tail -n +2 | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
 
@@ -128,6 +128,7 @@ while true; do
       # Queue is completely empty — propose improvements
       PROPOSAL_ID=$(ticket --db "$TICKET_DB" create "Reviewing codebase for improvements" \
         --assign "$AGENT_ID" --created-by "$AGENT_ID" --type proposal)
+      ticket --db "$TICKET_DB" update "$PROPOSAL_ID" --status in_progress
       CURRENT_TICKET_ID="$PROPOSAL_ID"  # Track for graceful shutdown
       run_proposal_flow "$PROPOSAL_ID"
       sleep 300  # Wait 5 minutes before checking again
@@ -196,7 +197,7 @@ Read CLAUDE.md for full operating guidelines." \
     --verbose \
     --allowedTools "$ALLOWED_TOOLS" \
     --max-turns "$MAX_TURNS" \
-    2>&1 | tee "$WORK_LOG"
+    2>&1 > "$WORK_LOG"
 
   ticket --db "$TICKET_DB" comment "$TICKET_ID" "Claude session log: $WORK_LOG ($(wc -l < "$WORK_LOG") lines)" --author "$AGENT_ID"
 
@@ -249,7 +250,7 @@ $VERIFY_ERRORS" \
         --verbose \
         --allowedTools "$ALLOWED_TOOLS" \
         --max-turns 10 \
-        2>&1 | tee "$VERIFY_LOG"
+        2>&1 > "$VERIFY_LOG"
 
       VERIFY_ERRORS=$(run_verification)
     done
@@ -292,7 +293,7 @@ $VERIFY_ERRORS" \
         --verbose \
         --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
         --max-turns 10 \
-        2>&1 | tee "$CONFLICT_LOG"
+        2>&1 > "$CONFLICT_LOG"
 
       if [ -z "$(git diff --name-only --diff-filter=U 2>/dev/null)" ]; then
         git commit --no-edit 2>/dev/null || true
@@ -341,7 +342,7 @@ $VERIFY_ERRORS" \
           --verbose \
           --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
           --max-turns 10 \
-          2>&1 | tee "$CONFLICT_LOG"
+          2>&1 > "$CONFLICT_LOG"
 
         if [ -z "$(git diff --name-only --diff-filter=U 2>/dev/null)" ]; then
           git commit --no-edit 2>/dev/null || true

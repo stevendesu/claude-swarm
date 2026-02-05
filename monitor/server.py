@@ -15,7 +15,10 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
+import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -511,14 +514,88 @@ def api_activity(query: dict) -> tuple[int, dict]:
         conn.close()
 
 
+def _fetch_container_stats(container_id: str) -> dict | None:
+    """Fetch stats for a single container. Used for parallel fetching."""
+    return docker_api(f"/containers/{container_id}/stats?stream=false")
+
+
+def _parse_stats(stats: dict) -> dict:
+    """Extract CPU and memory metrics from Docker stats response."""
+    cpu_delta = (
+        stats.get("cpu_stats", {}).get("cpu_usage", {}).get("total_usage", 0)
+        - stats.get("precpu_stats", {}).get("cpu_usage", {}).get("total_usage", 0)
+    )
+    system_delta = (
+        stats.get("cpu_stats", {}).get("system_cpu_usage", 0)
+        - stats.get("precpu_stats", {}).get("system_cpu_usage", 0)
+    )
+    num_cpus = stats.get("cpu_stats", {}).get("online_cpus", 1) or 1
+    cpu_pct = 0.0
+    if system_delta > 0:
+        cpu_pct = (cpu_delta / system_delta) * num_cpus * 100.0
+
+    mem_usage = stats.get("memory_stats", {}).get("usage", 0)
+    mem_limit = stats.get("memory_stats", {}).get("limit", 1)
+    mem_pct = (mem_usage / mem_limit) * 100.0 if mem_limit else 0
+
+    return {
+        "cpu_percent": round(cpu_pct, 2),
+        "memory_usage": mem_usage,
+        "memory_limit": mem_limit,
+        "memory_percent": round(mem_pct, 2),
+    }
+
+
+# Cache for container stats — avoids hammering Docker on every poll
+_stats_cache: dict = {}          # container_id -> parsed stats dict
+_stats_cache_time: float = 0.0   # monotonic timestamp of last refresh
+_stats_cache_lock = threading.Lock()
+STATS_CACHE_TTL = 5  # seconds
+
+
+def _refresh_stats_cache(running_containers: list[dict]):
+    """Fetch stats for all running containers in parallel, update cache."""
+    global _stats_cache, _stats_cache_time
+
+    ids = [c["Id"] for c in running_containers]
+    if not ids:
+        with _stats_cache_lock:
+            _stats_cache = {}
+            _stats_cache_time = time.monotonic()
+        return
+
+    new_cache = {}
+    with ThreadPoolExecutor(max_workers=len(ids)) as pool:
+        futures = {pool.submit(_fetch_container_stats, cid): cid for cid in ids}
+        for future in futures:
+            cid = futures[future]
+            try:
+                raw = future.result()
+                if raw:
+                    new_cache[cid] = _parse_stats(raw)
+            except Exception:
+                pass
+
+    with _stats_cache_lock:
+        _stats_cache = new_cache
+        _stats_cache_time = time.monotonic()
+
+
 def api_agents() -> tuple[int, dict]:
     """GET /api/agents — agent container status from Docker."""
     containers = docker_api("/containers/json?all=true")
     if containers is None:
         return 200, {"agents": [], "error": "Docker not available"}
 
+    # Refresh stats cache if stale
+    running = [c for c in containers if c.get("State") == "running"]
+    with _stats_cache_lock:
+        cache_age = time.monotonic() - _stats_cache_time
+    if cache_age >= STATS_CACHE_TTL:
+        _refresh_stats_cache(running)
+
     agents = []
-    # Also query the DB for current ticket assignments
+    # Query the DB for current ticket assignments
     conn = get_db()
     try:
         assignments = {}
@@ -534,53 +611,40 @@ def api_agents() -> tuple[int, dict]:
     finally:
         conn.close()
 
+    with _stats_cache_lock:
+        cached = dict(_stats_cache)
+
     for c in containers:
         name = c.get("Names", [""])[0].lstrip("/")
-        # Filter to only agent-like containers (heuristic: name contains 'agent')
-        # Also include all containers in the same compose project
         labels = c.get("Labels", {})
+        service = labels.get("com.docker.compose.service", name)
         state = c.get("State", "unknown")
+
+        # Skip the monitor container — it's not an agent
+        if service == "monitor":
+            continue
 
         agent_info = {
             "id": c.get("Id", "")[:12],
             "name": name,
+            "service": service,
             "state": state,
             "status": c.get("Status", ""),
             "image": c.get("Image", ""),
             "created": c.get("Created", 0),
             "labels": labels,
-            "current_ticket": assignments.get(name),
+            "current_ticket": assignments.get(service),
         }
 
-        # Get stats for running containers
+        # Attach cached stats for running containers
         if state == "running":
-            stats = docker_api(f"/containers/{c['Id']}/stats?stream=false")
+            stats = cached.get(c["Id"])
             if stats:
-                # Calculate CPU percentage
-                cpu_delta = (
-                    stats.get("cpu_stats", {}).get("cpu_usage", {}).get("total_usage", 0)
-                    - stats.get("precpu_stats", {}).get("cpu_usage", {}).get("total_usage", 0)
-                )
-                system_delta = (
-                    stats.get("cpu_stats", {}).get("system_cpu_usage", 0)
-                    - stats.get("precpu_stats", {}).get("system_cpu_usage", 0)
-                )
-                num_cpus = stats.get("cpu_stats", {}).get("online_cpus", 1) or 1
-                cpu_pct = 0.0
-                if system_delta > 0:
-                    cpu_pct = (cpu_delta / system_delta) * num_cpus * 100.0
-
-                # Memory
-                mem_usage = stats.get("memory_stats", {}).get("usage", 0)
-                mem_limit = stats.get("memory_stats", {}).get("limit", 1)
-                mem_pct = (mem_usage / mem_limit) * 100.0 if mem_limit else 0
-
-                agent_info["cpu_percent"] = round(cpu_pct, 2)
-                agent_info["memory_usage"] = mem_usage
-                agent_info["memory_limit"] = mem_limit
-                agent_info["memory_percent"] = round(mem_pct, 2)
+                agent_info.update(stats)
 
         agents.append(agent_info)
+
+    agents.sort(key=lambda a: a["name"])
 
     return 200, {"agents": agents}
 

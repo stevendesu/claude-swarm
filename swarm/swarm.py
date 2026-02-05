@@ -98,6 +98,8 @@ ruff check .
 python -m pytest --tb=short -q 2>/dev/null || true
 ```
 
+Do NOT run chmod on verify.sh — the swarm CLI handles that automatically after the interview.
+
 After writing both PROJECT.md and verify.sh, call the mcp__interview__end_interview tool to \
 automatically end the session. Do NOT use the Skill tool — use the MCP tool directly.
 """
