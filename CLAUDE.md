@@ -26,7 +26,7 @@ ai-project-manager/              # This repo (the swarm toolkit)
     agent-service.yml             # Single agent service block (duplicated N times)
   swarm/
     swarm.py                      # The `swarm` CLI — init, start, stop, scale, regenerate
-    interview-mcp.py              # MCP server for Phase 2 interview (requires mcp library)
+    interview-mcp.py              # MCP server for Phase 2 interview (Python, stdlib only)
   docker-compose.yml              # LOCAL TEST COPY ONLY — NOT used by deployed swarms
 ```
 
@@ -103,7 +103,7 @@ The config file lives at `.swarm/config.json` in target projects. Default values
 
 ### 6. All Python components use stdlib only
 
-`ticket.py`, `swarm.py`, and `monitor/server.py` use only Python 3 standard library modules (sqlite3, argparse, json, http.server, etc.). No pip dependencies. The one exception is `interview-mcp.py` which requires the `mcp` library.
+`ticket.py`, `swarm.py`, `monitor/server.py`, and `interview-mcp.py` use only Python 3 standard library modules (sqlite3, argparse, json, http.server, etc.). No pip dependencies.
 
 ### 7. Dockerfile build context
 

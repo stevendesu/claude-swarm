@@ -11,7 +11,7 @@ CREATE TABLE tickets_new (
   status      TEXT NOT NULL DEFAULT 'open',
   type        TEXT DEFAULT 'task' CHECK(type IN ('task', 'proposal', 'question', 'verify')),
   assigned_to TEXT,
-  parent_id   INTEGER REFERENCES tickets_new(id),
+  parent_id   INTEGER REFERENCES tickets(id),
   created_by  TEXT NOT NULL,
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
