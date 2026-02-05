@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-LOG_DIR="/workspace/.agent-logs"
+LOG_DIR="/agent-logs"
 STALE_THRESHOLD_MINUTES="${STALE_THRESHOLD_MINUTES:-20}"
 
 # Find the most recently modified log file

@@ -213,7 +213,7 @@ Base: `node:lts-slim`. Installs: git, jq, curl, python3, cron, procps, Claude Co
 | `/repo.git` | `.swarm/repo.git` bind mount | rw | Bare git repo shared between agents |
 | `/host-claude-config` | Host `~/.claude/` | ro | User preferences (NOT OAuth tokens) |
 | `/workspace` | Container-local | rw | Agent's private git clone |
-| `/workspace/.agent-logs` | `.swarm/agent-logs/agent-N` bind mount | rw | Claude Code session logs (shared with monitor) |
+| `/agent-logs` | `.swarm/agent-logs/agent-N` bind mount | rw | Claude Code session logs (shared with monitor) |
 
 ### Environment variables
 
@@ -248,7 +248,7 @@ Infinite loop:
 3. **If ticket claimed:**
    - Pull latest main, create branch `ticket-<id>`
    - Run `claude -p` with ticket details + instructions, allowed tools, max turns
-   - Log Claude session output to `/workspace/.agent-logs/`
+   - Log Claude session output to `/agent-logs/`
    - Check if ticket was released (blocked/unclaimed) during work — if so, discard changes
    - **Verification gate**: scan for merge conflict markers + run `./verify.sh` if present
    - If verification fails: invoke Claude to fix (up to `VERIFY_RETRIES` attempts), unclaim on exhaustion

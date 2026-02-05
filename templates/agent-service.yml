@@ -6,7 +6,7 @@
       - ./.swarm/tickets:/tickets
       - ./.swarm/repo.git:/repo.git
       - ${HOME}/.claude:/host-claude-config:ro
-      - ./.swarm/agent-logs/agent-__N__:/workspace/.agent-logs
+      - ./.swarm/agent-logs/agent-__N__:/agent-logs
     environment:
       - AGENT_ID=agent-__N__
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}

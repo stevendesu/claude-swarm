@@ -9,7 +9,7 @@ NTFY_TOPIC="${NTFY_TOPIC:-}"
 MAX_TURNS="${MAX_TURNS:-50}"
 ALLOWED_TOOLS="${ALLOWED_TOOLS:-Bash,Read,Write,Edit,Glob,Grep}"
 VERIFY_RETRIES="${VERIFY_RETRIES:-2}"
-LOG_DIR="/workspace/.agent-logs"
+LOG_DIR="/agent-logs"
 
 # ── Verification gate ────────────────────────────────────────────────────────
 # Runs checks after Claude finishes work but before git commit.

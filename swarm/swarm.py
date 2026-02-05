@@ -320,7 +320,7 @@ def cmd_init(args):
 
     # ── 7. Update .gitignore (before git init so .swarm/ is never tracked)
     gitignore_path = os.path.join(project_dir, ".gitignore")
-    entries_to_add = [".swarm/", ".agent-logs/"]
+    entries_to_add = [".swarm/"]
     existing_lines = set()
     if os.path.isfile(gitignore_path):
         with open(gitignore_path, "r") as f:
