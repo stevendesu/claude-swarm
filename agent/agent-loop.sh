@@ -48,7 +48,7 @@ while true; do
       claude -p "Review the codebase. Identify the single most impactful \
         improvement. Output ONLY a title line and a description paragraph, \
         nothing else." \
-        --output-format text \
+        --output-format stream-json \
         --allowedTools "Read,Glob,Grep" \
         --max-turns 20 \
         2>&1 | tee "$PROPOSAL_LOG" > /tmp/proposal.txt
@@ -129,7 +129,7 @@ TICKET COMMANDS (use --db $TICKET_DB for all commands):
 - Release if stuck: ticket unclaim $TICKET_ID (all code changes discarded)
 
 Read CLAUDE.md for full operating guidelines." \
-    --output-format text \
+    --output-format stream-json \
     --allowedTools "$ALLOWED_TOOLS" \
     --max-turns "$MAX_TURNS" \
     2>&1 | tee "$WORK_LOG"
@@ -182,7 +182,7 @@ Read CLAUDE.md for full operating guidelines." \
       claude -p "There is a merge conflict merging branch $branch into main in /workspace. \
         Resolve all conflicts, keeping both sets of changes where possible. \
         After resolving, stage all resolved files with git add." \
-        --output-format text \
+        --output-format stream-json \
         --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
         --max-turns 10 \
         2>&1 | tee "$CONFLICT_LOG"
@@ -230,7 +230,7 @@ Read CLAUDE.md for full operating guidelines." \
         claude -p "There is a merge conflict between local main and origin/main in /workspace. \
           Resolve all conflicts, keeping both sets of changes where possible. \
           After resolving, stage all resolved files with git add." \
-          --output-format text \
+          --output-format stream-json \
           --allowedTools "Bash,Read,Write,Edit,Glob,Grep" \
           --max-turns 10 \
           2>&1 | tee "$CONFLICT_LOG"
