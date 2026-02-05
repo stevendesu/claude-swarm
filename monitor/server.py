@@ -398,9 +398,11 @@ def api_approve_ticket(ticket_id: int, body: dict) -> tuple[int, dict]:
                 (body["description"], ticket_id),
             )
 
-        # Set assigned_to = NULL and status = 'open' to make it claimable
+        # Set assigned_to = NULL, status = 'open', type = 'task' to make it
+        # claimable.  Changing type to 'task' ensures the claiming agent enters
+        # the normal work flow rather than the proposal flow.
         conn.execute(
-            "UPDATE tickets SET assigned_to = NULL, status = 'open', "
+            "UPDATE tickets SET assigned_to = NULL, status = 'open', type = 'task', "
             "updated_at = datetime('now') WHERE id = ?",
             (ticket_id,),
         )

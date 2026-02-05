@@ -10,6 +10,49 @@ MAX_TURNS="${MAX_TURNS:-50}"
 ALLOWED_TOOLS="${ALLOWED_TOOLS:-Bash,Read,Write,Edit,Glob,Grep}"
 LOG_DIR="/workspace/.agent-logs"
 
+# ── Proposal flow ────────────────────────────────────────────────────────────
+# Runs Claude in read-only mode to generate a proposal, then reassigns the
+# ticket to a human for review.  Called both when the queue is empty (fresh
+# proposal) and when an agent claims a ticket whose type is "proposal"
+# (crash-recovery of a previous proposal attempt).
+run_proposal_flow() {
+  local PROP_TICKET_ID="$1"
+
+  PROPOSAL_LOG="$LOG_DIR/proposal-$(date +%Y%m%d-%H%M%S).log"
+  claude -p "Review the codebase. Identify the single most impactful \
+    improvement. Output ONLY a title line and a description paragraph, \
+    nothing else." \
+    --output-format stream-json \
+    --verbose \
+    --allowedTools "Read,Glob,Grep" \
+    --max-turns 20 \
+    2>&1 | tee "$PROPOSAL_LOG" > /tmp/proposal.txt
+
+  PROP_RESULT=$(tail -n 1 /tmp/proposal.txt | jq -r '.result // empty')
+  PROP_TITLE=$(echo "$PROP_RESULT" | head -1 | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+  PROP_DESC=$(echo "$PROP_RESULT" | tail -n +2 | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+
+  if [ -z "$PROP_TITLE" ]; then
+    ticket --db "$TICKET_DB" comment "$PROP_TICKET_ID" \
+      "Proposal generation produced no output — see $PROPOSAL_LOG" --author "$AGENT_ID"
+    ticket --db "$TICKET_DB" update "$PROP_TICKET_ID" \
+      --title "[Empty proposal]" \
+      --description "Agent failed to generate a proposal. Check logs." \
+      --assign human --status open
+  else
+    ticket --db "$TICKET_DB" update "$PROP_TICKET_ID" \
+      --title "$PROP_TITLE" \
+      --description "$PROP_DESC" \
+      --assign human --status open
+  fi
+
+  CURRENT_TICKET_ID=""  # Proposal handed off to human, no longer ours
+
+  if [ -n "$NTFY_TOPIC" ]; then
+    curl -s -d "Agent proposal: ${PROP_TITLE:-[empty]}" "ntfy.sh/$NTFY_TOPIC"
+  fi
+}
+
 # Track current ticket for graceful shutdown
 CURRENT_TICKET_ID=""
 
@@ -54,46 +97,9 @@ while true; do
     if [ "$TOTAL" -eq 0 ]; then
       # Queue is completely empty — propose improvements
       PROPOSAL_ID=$(ticket --db "$TICKET_DB" create "Reviewing codebase for improvements" \
-        --assign "$AGENT_ID" --created-by "$AGENT_ID")
+        --assign "$AGENT_ID" --created-by "$AGENT_ID" --type proposal)
       CURRENT_TICKET_ID="$PROPOSAL_ID"  # Track for graceful shutdown
-
-      PROPOSAL_LOG="$LOG_DIR/proposal-$(date +%Y%m%d-%H%M%S).log"
-      claude -p "Review the codebase. Identify the single most impactful \
-        improvement. Output ONLY a title line and a description paragraph, \
-        nothing else." \
-        --output-format stream-json \
-        --verbose \
-        --allowedTools "Read,Glob,Grep" \
-        --max-turns 20 \
-        2>&1 | tee "$PROPOSAL_LOG" > /tmp/proposal.txt
-
-      # Extract the final text from stream-json (last line is type=result with .result field)
-      PROP_RESULT=$(tail -n 1 /tmp/proposal.txt | jq -r '.result // empty')
-      PROP_TITLE=$(echo "$PROP_RESULT" | head -1 | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
-      PROP_DESC=$(echo "$PROP_RESULT" | tail -n +2 | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
-
-      if [ -z "$PROP_TITLE" ]; then
-        ticket --db "$TICKET_DB" comment "$PROPOSAL_ID" "Proposal generation produced no output — see $PROPOSAL_LOG" --author "$AGENT_ID"
-        ticket --db "$TICKET_DB" update "$PROPOSAL_ID" \
-          --title "[Empty proposal]" \
-          --description "Agent failed to generate a proposal. Check logs." \
-          --assign human \
-          --status open
-      else
-        ticket --db "$TICKET_DB" update "$PROPOSAL_ID" \
-          --title "$PROP_TITLE" \
-          --description "$PROP_DESC" \
-          --assign human \
-          --status open
-      fi
-
-      CURRENT_TICKET_ID=""  # Proposal handed off to human, no longer ours
-
-      # Notify human
-      if [ -n "$NTFY_TOPIC" ]; then
-        curl -s -d "Agent proposal: $PROP_TITLE" "ntfy.sh/$NTFY_TOPIC"
-      fi
-
+      run_proposal_flow "$PROPOSAL_ID"
       sleep 300  # Wait 5 minutes before checking again
     else
       sleep 10   # Tickets exist but none available for us
@@ -111,6 +117,15 @@ while true; do
   PARENT_ID=$(echo "$TICKET_JSON" | jq -r '.parent_id // ""')
   if [ -n "$PARENT_ID" ] && [ "$PARENT_ID" != "null" ]; then
     PARENT_CONTEXT=$(ticket --db "$TICKET_DB" show "$PARENT_ID" --format text 2>/dev/null || echo "")
+  fi
+
+  # If this is a proposal ticket (e.g. re-claimed after a crash), run the
+  # proposal flow instead of the normal work flow.
+  TICKET_TYPE=$(echo "$TICKET_JSON" | jq -r '.type // "task"')
+  if [ "$TICKET_TYPE" = "proposal" ]; then
+    run_proposal_flow "$TICKET_ID"
+    sleep 300
+    continue
   fi
 
   # Ensure clean workspace before starting
