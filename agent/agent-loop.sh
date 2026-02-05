@@ -45,7 +45,7 @@ run_verification() {
   # Project-specific: run verify.sh if it exists and is executable
   if [ -x "./verify.sh" ]; then
     local verify_output
-    if ! verify_output=$(./verify.sh 2>&1); then
+    if ! verify_output=$(TICKET_ID="$TICKET_ID" TICKET_TITLE="$TITLE" AGENT_ID="$AGENT_ID" ./verify.sh 2>&1); then
       errors="${errors}verify.sh failed:"$'\n'"${verify_output}"$'\n'
     fi
   fi

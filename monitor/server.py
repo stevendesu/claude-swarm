@@ -497,6 +497,93 @@ def api_answer_ticket(ticket_id: int, body: dict) -> tuple[int, dict]:
         conn.close()
 
 
+def api_pass_verify_ticket(ticket_id: int) -> tuple[int, dict]:
+    """POST /api/tickets/:id/pass — pass a verify ticket (mark done)."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
+        ).fetchone()
+        if not row:
+            return 404, {"error": f"Ticket {ticket_id} not found"}
+
+        conn.execute(
+            "UPDATE tickets SET status = 'done', updated_at = datetime('now') "
+            "WHERE id = ?",
+            (ticket_id,),
+        )
+        log_activity(conn, ticket_id, "human", "verify_passed",
+                     f"Verification passed for ticket #{ticket_id}")
+        conn.commit()
+        return 200, {"ok": True}
+    finally:
+        conn.close()
+
+
+def api_fail_verify_ticket(ticket_id: int, body: dict) -> tuple[int, dict]:
+    """POST /api/tickets/:id/fail — fail a verify ticket, create fix task."""
+    reason = body.get("reason")
+    if not reason:
+        return 400, {"error": "reason is required"}
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
+        ).fetchone()
+        if not row:
+            return 404, {"error": f"Ticket {ticket_id} not found"}
+
+        # Create a new fix task with the failure reason as description
+        cur = conn.execute(
+            "INSERT INTO tickets (title, description, created_by, type) "
+            "VALUES (?, ?, ?, ?)",
+            (f"Fix: {row['title']}", reason, "human", "task"),
+        )
+        fix_id = cur.lastrowid
+        log_activity(conn, fix_id, "human", "created",
+                     f"Fix task from failed verification #{ticket_id}")
+
+        # Copy blocking relationships from verify ticket to fix task
+        # (all tickets blocked by the verify ticket should now be blocked by the fix task)
+        dependents = conn.execute(
+            "SELECT ticket_id FROM blockers WHERE blocked_by = ?",
+            (ticket_id,),
+        ).fetchall()
+        for dep in dependents:
+            dep_id = dep["ticket_id"]
+            try:
+                conn.execute(
+                    "INSERT INTO blockers (ticket_id, blocked_by) VALUES (?, ?)",
+                    (dep_id, fix_id),
+                )
+                log_activity(conn, dep_id, "human", "blocker_added",
+                             f"Blocked by #{fix_id} (from failed verify #{ticket_id})")
+            except sqlite3.IntegrityError:
+                pass
+
+        # Post comment on verify ticket
+        conn.execute(
+            "INSERT INTO comments (ticket_id, author, body) VALUES (?, ?, ?)",
+            (ticket_id, "human",
+             f"Verification failed. Reason: {reason}\nCreated fix task #{fix_id}"),
+        )
+
+        # Mark verify ticket done
+        conn.execute(
+            "UPDATE tickets SET status = 'done', updated_at = datetime('now') "
+            "WHERE id = ?",
+            (ticket_id,),
+        )
+        log_activity(conn, ticket_id, "human", "verify_failed",
+                     f"Verification failed, created fix task #{fix_id}")
+
+        conn.commit()
+        return 200, {"ok": True, "fix_ticket_id": fix_id}
+    finally:
+        conn.close()
+
+
 def api_activity(query: dict) -> tuple[int, dict]:
     """GET /api/activity — activity feed."""
     limit = int(query.get("limit", [50])[0])
@@ -996,6 +1083,21 @@ class MonitorHandler(BaseHTTPRequestHandler):
             if m and method == "POST":
                 body = self._read_body()
                 status, data = api_answer_ticket(int(m.group(1)), body)
+                self._send_json(status, data)
+                return
+
+            # POST /api/tickets/:id/pass
+            m = re.match(r"^/api/tickets/(\d+)/pass$", path)
+            if m and method == "POST":
+                status, data = api_pass_verify_ticket(int(m.group(1)))
+                self._send_json(status, data)
+                return
+
+            # POST /api/tickets/:id/fail
+            m = re.match(r"^/api/tickets/(\d+)/fail$", path)
+            if m and method == "POST":
+                body = self._read_body()
+                status, data = api_fail_verify_ticket(int(m.group(1)), body)
                 self._send_json(status, data)
                 return
 

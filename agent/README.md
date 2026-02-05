@@ -9,6 +9,8 @@ This directory contains everything needed to build and run an autonomous agent c
 | `Dockerfile` | Builds the agent container image. Base is `node:lts-slim` with git, jq, curl, python3, and Claude Code CLI installed. |
 | `entrypoint.sh` | Container startup script. Verifies Claude credentials, clones the repo, configures git, then hands off to the agent loop. |
 | `agent-loop.sh` | Main process. Continuously claims tickets, invokes Claude Code, and manages the git workflow. |
+| `check-alive.sh` | Cron script that detects stalled agents and triggers a restart. |
+| `project-setup.sh` | Project-specific Docker build hook. No-op by default; populated by the interview for stacks that need extra packages (e.g. Android SDK). Preserved across `swarm regenerate`. |
 
 ## Building
 

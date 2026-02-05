@@ -140,6 +140,7 @@ textarea { resize: vertical; min-height: 80px; }
 .badge-type-task { background: #444; color: var(--text); }
 .badge-type-proposal { background: rgba(133, 100, 4, 0.8); color: #fff; }
 .badge-type-question { background: rgba(12, 84, 96, 0.8); color: #fff; }
+.badge-type-verify { background: rgba(128, 90, 213, 0.8); color: #fff; }
 
 /* ---- Ticket Cards ---- */
 .ticket-group { margin-bottom: 2rem; }
@@ -802,6 +803,10 @@ async function openTicket(id) {
       html += `<button onclick="approveTicket(${data.id})">Approve</button>`;
       html += `<button class="secondary" onclick="showApproveWithEdits(${data.id})">Approve with Edits</button>`;
       html += `<button class="danger" onclick="rejectTicket(${data.id})">Reject</button>`;
+    } else if (isHumanAssigned && ticketType === 'verify') {
+      // Verify actions: Pass / Fail
+      html += `<button onclick="passVerifyTicket(${data.id})">Pass</button>`;
+      html += `<button class="danger" onclick="showFailForm(${data.id})">Fail</button>`;
     } else if (isHumanAssigned && ticketType === 'question') {
       // Question actions: Answer & Unblock
       html += `<button onclick="showAnswerForm(${data.id})">Answer & Unblock</button>`;
@@ -844,6 +849,7 @@ async function openTicket(id) {
         <option value="task"${(data.type || 'task') === 'task' ? ' selected' : ''}>task</option>
         <option value="proposal"${data.type === 'proposal' ? ' selected' : ''}>proposal</option>
         <option value="question"${data.type === 'question' ? ' selected' : ''}>question</option>
+        <option value="verify"${data.type === 'verify' ? ' selected' : ''}>verify</option>
       </select>
       <button onclick="updateTicketType(${data.id})">Save</button>
     </div>
@@ -866,6 +872,16 @@ async function openTicket(id) {
     <div style="display:flex;gap:0.5rem;margin-top:0.5rem;">
       <button onclick="answerTicket(${data.id})">Submit Answer & Unblock</button>
       <button class="secondary" onclick="hideForm('answer-form')">Cancel</button>
+    </div>
+  </div>`;
+
+  // Fail verification form (hidden)
+  html += `<div id="fail-form" style="display:none;margin-top:0.75rem;">
+    <label style="font-size:0.8rem;color:var(--text-dim);display:block;margin-bottom:0.25rem;">Failure reason:</label>
+    <textarea id="fail-reason-input" placeholder="Describe what failed..."></textarea>
+    <div style="display:flex;gap:0.5rem;margin-top:0.5rem;">
+      <button class="danger" onclick="failVerifyTicket(${data.id})">Submit Failure</button>
+      <button class="secondary" onclick="hideForm('fail-form')">Cancel</button>
     </div>
   </div>`;
 
@@ -987,12 +1003,38 @@ async function answerTicket(id) {
   refresh();
 }
 
+async function passVerifyTicket(id) {
+  if (!confirm('Pass verification? Dependent tickets will be unblocked.')) return;
+  await api('POST', '/api/tickets/' + id + '/pass');
+  closeModal();
+  refresh();
+}
+
+function showFailForm(id) {
+  hideAllForms();
+  document.getElementById('fail-form').style.display = 'block';
+}
+
+async function failVerifyTicket(id) {
+  const reason = document.getElementById('fail-reason-input').value.trim();
+  if (!reason) {
+    alert('Please provide a failure reason');
+    return;
+  }
+  const result = await api('POST', '/api/tickets/' + id + '/fail', { reason });
+  if (result.ok) {
+    alert('Verification failed. Created fix task #' + result.fix_ticket_id);
+  }
+  closeModal();
+  refresh();
+}
+
 function hideForm(formId) {
   document.getElementById(formId).style.display = 'none';
 }
 
 function hideAllForms() {
-  ['reassign-form', 'status-form', 'type-form', 'approve-edit-form', 'answer-form'].forEach(id => {
+  ['reassign-form', 'status-form', 'type-form', 'approve-edit-form', 'answer-form', 'fail-form'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
   });
@@ -1305,6 +1347,8 @@ function actionColor(action) {
     blocker_added: 'var(--status-blocked)',
     blocker_removed: 'var(--status-done)',
     unclaimed: 'var(--text-dim)',
+    verify_passed: 'var(--status-done)',
+    verify_failed: 'var(--status-blocked)',
   };
   return colors[action] || 'var(--text)';
 }

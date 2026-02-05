@@ -118,6 +118,7 @@ All commands use `ticket --db /tickets/tickets.db`.
 | Log progress | `comment <ID> "message" --author $AGENT_ID` |
 | Break down work | `create "Sub-task" --parent <ID> --created-by $AGENT_ID` |
 | Depends on other work | `create "Task" --blocked-by <PREREQUISITE_ID> --created-by $AGENT_ID` |
+| Inherit dependents | `create "Verify" --block-dependents-of <SOURCE_ID> --created-by $AGENT_ID` |
 | Mark blocked | `block <ID> --by <BLOCKER_ID>` (auto-releases the ticket) |
 | Ask humans | `create "Question" --assign human --blocked-by <YOUR_ID> --created-by $AGENT_ID` |
 | Propose improvement | `create "Suggestion" --assign human --type proposal --created-by $AGENT_ID` |
@@ -129,10 +130,15 @@ All commands use `ticket --db /tickets/tickets.db`.
 - **task** (default): Normal work for agents to complete
 - **question**: You need human input before continuing. Use `--blocked-by` to block your current ticket.
 - **proposal**: Suggesting an improvement. Human will approve/reject. No blocker needed.
+- **verify**: Human verification needed (e.g. manual build/test). Human can Pass or Fail — failing creates a fix task for agents.
 
 When creating a human-assigned ticket:
 - With `--blocked-by`: defaults to `question` type
 - Without `--blocked-by`: defaults to `proposal` type
+
+## Platform-Specific Verification
+
+For some platforms (iOS, Windows-native), `verify.sh` may create `verify` tickets assigned to `human` requesting manual build/test. These use `--block-dependents-of` to ensure downstream tickets stay blocked until the human clicks Pass. If the human clicks Fail, a fix task is created for agents with the failure reason, and the cycle repeats. If you see "Manual build/test needed" tickets in the queue, they are not for agents.
 
 ## Dependencies
 

@@ -11,6 +11,7 @@ ai-project-manager/              # This repo (the swarm toolkit)
     entrypoint.sh                 # Container startup: validates env, clones repo, starts loop
     agent-loop.sh                 # Main autonomous loop: claim tickets, run claude, git workflow
     check-alive.sh                # Cron script: detects stalled agents, triggers restart
+    project-setup.sh              # Project-specific Docker build hook (no-op default)
   ticket/
     ticket.py                     # SQLite-backed CLI for task management (Python, stdlib only)
     test_ticket.py                # Test suite (run with: python -m pytest ticket/)
@@ -34,7 +35,7 @@ A target project after `swarm init`:
 target-project/
   .swarm/
     agent/                        # Copied from ai-project-manager/agent/
-      Dockerfile, entrypoint.sh, agent-loop.sh, check-alive.sh
+      Dockerfile, entrypoint.sh, agent-loop.sh, check-alive.sh, project-setup.sh
     ticket/                       # Copied from ai-project-manager/ticket/
       ticket.py, migrations/
     monitor/                      # Copied from ai-project-manager/monitor/
@@ -119,7 +120,7 @@ In `generate_docker_compose()`, the build context is `.swarm` with `dockerfile: 
 
 ### Database
 
-SQLite in WAL mode. Schema is managed via migrations in `ticket/migrations/`. Current schema version: 2.
+SQLite in WAL mode. Schema is managed via migrations in `ticket/migrations/`. Current schema version: 3.
 
 ```sql
 schema_version (version, applied_at)        -- tracks migration state
@@ -159,11 +160,13 @@ There is **no `blocked` status**. Whether a ticket is blocked is derived from th
 | `task`     | Normal work item for agents | Default for all tickets |
 | `proposal` | Agent suggestion awaiting human approval | `--assign human` without blockers |
 | `question` | Agent needs human input before proceeding | `--assign human` with `--blocked-by` |
+| `verify`   | Human verification needed (e.g. manual build/test) | Set explicitly via `--type verify` |
 
 Types enable the dashboard to show appropriate actions:
 - **task**: Standard claim/complete workflow
 - **proposal**: Approve / Approve with Edits / Reject buttons
 - **question**: Answer & Unblock (posts answer to blocked ticket, marks question done)
+- **verify**: Pass / Fail (pass marks done; fail creates a fix task for agents, inheriting dependents)
 
 Smart defaults: when creating a ticket assigned to `human`, the type defaults to `proposal` if standalone or `question` if it blocks another ticket. Use `--type` to override.
 
@@ -171,9 +174,10 @@ Smart defaults: when creating a ticket assigned to `human`, the type defaults to
 
 ```bash
 ticket create "Title" [--description TEXT] [--parent ID] [--assign WHO]
-                       [--blocked-by ID] [--created-by WHO] [--type task|proposal|question]
+                       [--blocked-by ID] [--block-dependents-of ID]
+                       [--created-by WHO] [--type task|proposal|question|verify]
 ticket update ID [--title TEXT] [--description TEXT] [--assign WHO] [--status STATUS]
-                 [--type task|proposal|question]
+                 [--type task|proposal|question|verify]
 ticket list [--status STATUS] [--assigned-to WHO] [--format text|json]
 ticket show ID [--format text|json]
 ticket count [--status STATUS]             # STATUS can be comma-separated: open,in_progress
@@ -282,6 +286,20 @@ Three layers of protection prevent tickets from getting stuck when agents die un
 
 Logs from stall detection are at `/var/log/check-alive.log` inside containers.
 
+### Platform-specific build support
+
+Two mechanisms support tech stacks that don't work out-of-the-box in the Linux agent containers:
+
+**`project-setup.sh`** — A per-project hook at `.swarm/agent/project-setup.sh` that runs during Docker image build (as root). The interview populates it for stacks that need extra packages (e.g. Android SDK, .NET SDK). It's a no-op by default (just `exit 0`). The Dockerfile COPYs and RUNs it after system dependencies but before agent tooling.
+
+- Created by `swarm init` (no-op default)
+- Preserved by `swarm regenerate` (not overwritten from source repo)
+- Interview writes a populated version for stacks that need it
+
+**Human verification ticket pattern** — For platforms that truly can't build in Linux (iOS/Xcode, Windows-native), `verify.sh` runs whatever checks it can in-container (linting, syntax checks), then creates a `verify` ticket assigned to `human` with `--block-dependents-of $TICKET_ID` and exits 0. Code gets merged; the verify ticket blocks downstream work until the human clicks Pass. If the human clicks Fail, a fix task is created for agents (inheriting the verify ticket's dependents), and the cycle repeats until the code passes.
+
+Environment variables available inside `verify.sh`: `TICKET_ID`, `TICKET_TITLE`, `AGENT_ID`.
+
 ## Swarm CLI (`swarm/swarm.py`)
 
 Installed at `~/.local/bin/swarm`. Finds the project root by walking up from cwd looking for `.swarm/`.
@@ -318,6 +336,8 @@ Python HTTP server (stdlib only) reading the SQLite database and Docker socket. 
 | `/api/tickets/:id/comment` | POST | Add a comment |
 | `/api/tickets/:id/complete` | POST | Mark ticket done |
 | `/api/tickets/:id/update` | POST | Update ticket fields |
+| `/api/tickets/:id/pass` | POST | Pass a verify ticket (marks done) |
+| `/api/tickets/:id/fail` | POST | Fail a verify ticket (creates fix task, inherits dependents) |
 | `/api/activity` | GET | Activity feed (chronological) |
 | `/api/agents` | GET | Docker container status (via Docker socket) |
 | `/api/agents/:name/logs` | GET | Container logs |

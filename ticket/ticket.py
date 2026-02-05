@@ -3,7 +3,8 @@
 
 Usage:
     ticket create "Title" [--description TEXT] [--parent ID] [--assign WHO]
-                          [--blocked-by ID] [--created-by WHO] [--type TYPE] [--db PATH]
+                          [--blocked-by ID] [--block-dependents-of ID]
+                          [--created-by WHO] [--type TYPE] [--db PATH]
     ticket update ID [--title TEXT] [--description TEXT] [--assign WHO]
                      [--status STATUS] [--type TYPE] [--db PATH]
     ticket list [--status STATUS] [--assigned-to WHO] [--format FMT] [--db PATH]
@@ -287,6 +288,30 @@ def cmd_create(args):
         )
         log_activity(conn, new_id, args.created_by, "blocker_added",
                       f"Blocked by ticket #{args.blocked_by}")
+
+    if args.block_dependents_of is not None:
+        source_id = args.block_dependents_of
+        # Verify source ticket exists
+        if not conn.execute("SELECT id FROM tickets WHERE id = ?", (source_id,)).fetchone():
+            print(f"Error: source ticket {source_id} not found for --block-dependents-of.",
+                  file=sys.stderr)
+            conn.rollback()
+            sys.exit(1)
+        # Find all tickets that are blocked by the source ticket
+        dependents = conn.execute(
+            "SELECT ticket_id FROM blockers WHERE blocked_by = ?", (source_id,)
+        ).fetchall()
+        for dep in dependents:
+            dep_id = dep["ticket_id"]
+            try:
+                conn.execute(
+                    "INSERT INTO blockers (ticket_id, blocked_by) VALUES (?, ?)",
+                    (dep_id, new_id),
+                )
+                log_activity(conn, dep_id, args.created_by, "blocker_added",
+                             f"Blocked by #{new_id} (via --block-dependents-of #{source_id})")
+            except sqlite3.IntegrityError:
+                pass  # Already blocked by this ticket (shouldn't happen for new tickets)
 
     log_activity(conn, new_id, args.created_by, "created", args.title)
     conn.commit()
@@ -638,8 +663,10 @@ def build_parser():
                    help="ID of ticket that must complete before this one")
     p.add_argument("--created-by", default="human", dest="created_by",
                    help="Creator identifier (default: human)")
-    p.add_argument("--type", default=None, choices=["task", "proposal", "question"],
+    p.add_argument("--type", default=None, choices=["task", "proposal", "question", "verify"],
                    help="Ticket type (default: auto-detected)")
+    p.add_argument("--block-dependents-of", type=int, default=None, dest="block_dependents_of",
+                   help="Copy blocking relationships: all tickets blocked by this ID also become blocked by the new ticket")
 
     # update
     p = sub.add_parser("update", help="Update a ticket")
@@ -648,7 +675,7 @@ def build_parser():
     p.add_argument("--description", default=None)
     p.add_argument("--assign", default=None)
     p.add_argument("--status", default=None)
-    p.add_argument("--type", default=None, choices=["task", "proposal", "question"])
+    p.add_argument("--type", default=None, choices=["task", "proposal", "question", "verify"])
 
     # list
     p = sub.add_parser("list", help="List tickets")

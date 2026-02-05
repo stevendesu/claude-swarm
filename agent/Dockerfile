@@ -23,6 +23,10 @@ COPY agent/agent-loop.sh /usr/local/bin/agent-loop.sh
 COPY agent/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/agent-loop.sh /usr/local/bin/entrypoint.sh
 
+# ── Project-specific setup (populated by interview, no-op by default) ──
+COPY agent/project-setup.sh /tmp/project-setup.sh
+RUN chmod +x /tmp/project-setup.sh && /tmp/project-setup.sh
+
 # ── Stall detection ──────────────────────────────────────────────────────
 # Cron job runs every 5 minutes to check if the agent-loop is still active.
 # If no log activity for 20+ minutes, it sends SIGTERM to trigger graceful

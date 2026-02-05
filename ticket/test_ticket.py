@@ -774,6 +774,119 @@ def test_ticket_type_update():
         os.unlink(db)
 
 
+def test_verify_type():
+    print("test_verify_type")
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db = f.name
+    try:
+        init_db(db)
+
+        # Create a verify ticket explicitly
+        r = run(["create", "Manual verification needed", "--type", "verify",
+                 "--assign", "human"], db=db)
+        assert_rc("create verify rc", r, 0)
+        assert_eq("create verify id", r.stdout.strip(), "1")
+
+        # Show it — type should be verify
+        r = run(["show", "1", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("verify type", data["type"], "verify")
+
+        # Update type to verify
+        run(["create", "Some task"], db=db)
+        r = run(["update", "2", "--type", "verify"], db=db)
+        assert_rc("update to verify rc", r, 0)
+        r = run(["show", "2", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("updated to verify", data["type"], "verify")
+    finally:
+        os.unlink(db)
+
+
+def test_block_dependents_of():
+    print("test_block_dependents_of")
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db = f.name
+    try:
+        init_db(db)
+
+        # Create a source ticket (#1)
+        run(["create", "Source task"], db=db)
+
+        # Create dependents (#2, #3) blocked by source
+        run(["create", "Dependent A", "--blocked-by", "1"], db=db)
+        run(["create", "Dependent B", "--blocked-by", "1"], db=db)
+
+        # Create a verify ticket (#4) with --block-dependents-of 1
+        r = run(["create", "Verify source", "--type", "verify", "--assign", "human",
+                 "--block-dependents-of", "1"], db=db)
+        assert_rc("create with block-dependents-of rc", r, 0)
+        assert_eq("verify ticket id", r.stdout.strip(), "4")
+
+        # Dependents should now be blocked by BOTH #1 and #4
+        r = run(["show", "2", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_in("dep A blocked by source", data["blocked_by"], 1)
+        assert_in("dep A blocked by verify", data["blocked_by"], 4)
+
+        r = run(["show", "3", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_in("dep B blocked by source", data["blocked_by"], 1)
+        assert_in("dep B blocked by verify", data["blocked_by"], 4)
+
+        # Mark source done — dependents still blocked by verify ticket
+        run(["mark-done", "1"], db=db)
+        r = run(["claim-next", "--agent", "agent-1"], db=db)
+        assert_rc("claim still blocked by verify rc", r, 1)
+
+        # Mark verify done — dependents now claimable
+        run(["mark-done", "4"], db=db)
+        r = run(["claim-next", "--agent", "agent-1", "--format", "json"], db=db)
+        assert_rc("claim after verify done rc", r, 0)
+        data = json.loads(r.stdout)
+        assert_eq("claims dependent A", data["id"], 2)
+    finally:
+        os.unlink(db)
+
+
+def test_block_dependents_of_no_dependents():
+    print("test_block_dependents_of_no_dependents")
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db = f.name
+    try:
+        init_db(db)
+
+        # Create a source ticket with no dependents
+        run(["create", "Lonely task"], db=db)
+
+        # --block-dependents-of with no dependents is a no-op
+        r = run(["create", "Verify lonely", "--type", "verify",
+                 "--block-dependents-of", "1"], db=db)
+        assert_rc("no dependents rc", r, 0)
+        assert_eq("no dependents id", r.stdout.strip(), "2")
+
+        # Verify ticket should exist with no blocks
+        r = run(["show", "2", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("no blocks", data["blocks"], [])
+    finally:
+        os.unlink(db)
+
+
+def test_block_dependents_of_nonexistent():
+    print("test_block_dependents_of_nonexistent")
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db = f.name
+    try:
+        init_db(db)
+
+        # --block-dependents-of referencing nonexistent ticket should fail
+        r = run(["create", "Bad ref", "--block-dependents-of", "999"], db=db)
+        assert_rc("nonexistent source rc", r, 1)
+    finally:
+        os.unlink(db)
+
+
 def test_migrate_command():
     print("test_migrate_command")
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -819,6 +932,10 @@ if __name__ == "__main__":
         test_ticket_type_defaults,
         test_ticket_type_explicit,
         test_ticket_type_update,
+        test_verify_type,
+        test_block_dependents_of,
+        test_block_dependents_of_no_dependents,
+        test_block_dependents_of_nonexistent,
         test_migrate_command,
     ]
 
