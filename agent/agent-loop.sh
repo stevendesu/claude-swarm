@@ -11,6 +11,19 @@ ALLOWED_TOOLS="${ALLOWED_TOOLS:-Bash,Read,Write,Edit,Glob,Grep}"
 VERIFY_RETRIES="${VERIFY_RETRIES:-2}"
 LOG_DIR="/agent-logs"
 
+# ── Sync workspace to latest origin/main ────────────────────────────────────
+# Checks out main, removes stale branches, fetches + resets to origin/main,
+# and cleans untracked files.  Used before starting any new work.
+sync_to_latest() {
+  git checkout main >/dev/null 2>&1 || git checkout -b main >/dev/null 2>&1
+  for branch in $(git for-each-ref --format='%(refname:short)' refs/heads/ | grep -v '^main$'); do
+    git branch -D "$branch" >/dev/null 2>&1 || true
+  done
+  git fetch origin main >/dev/null 2>&1 || true
+  git reset --hard origin/main >/dev/null 2>&1 || true
+  git clean -fd >/dev/null 2>&1 || true
+}
+
 # ── Verification gate ────────────────────────────────────────────────────────
 # Runs checks after Claude finishes work but before git commit.
 # Returns error output on stdout (empty string = pass).
@@ -126,6 +139,8 @@ while true; do
 
     if [ "$TOTAL" -eq 0 ]; then
       # Queue is completely empty — propose improvements
+      sync_to_latest
+
       PROPOSAL_ID=$(ticket --db "$TICKET_DB" create "Reviewing codebase for improvements" \
         --assign "$AGENT_ID" --created-by "$AGENT_ID" --type proposal)
       ticket --db "$TICKET_DB" update "$PROPOSAL_ID" --status in_progress
@@ -154,19 +169,14 @@ while true; do
   # proposal flow instead of the normal work flow.
   TICKET_TYPE=$(echo "$TICKET_JSON" | jq -r '.type // "task"')
   if [ "$TICKET_TYPE" = "proposal" ]; then
+    sync_to_latest
     run_proposal_flow "$TICKET_ID"
     sleep 300
     continue
   fi
 
   # Ensure clean workspace before starting
-  git checkout main >/dev/null 2>&1 || git checkout -b main >/dev/null 2>&1
-  for branch in $(git for-each-ref --format='%(refname:short)' refs/heads/ | grep -v '^main$'); do
-    git branch -D "$branch" >/dev/null 2>&1 || true
-  done
-  git fetch origin main >/dev/null 2>&1 || true
-  git reset --hard origin/main >/dev/null 2>&1 || true
-  git clean -fd >/dev/null 2>&1 || true
+  sync_to_latest
 
   # Create a branch for this ticket
   BRANCH="ticket-${TICKET_ID}"
@@ -212,12 +222,7 @@ Read CLAUDE.md for full operating guidelines." \
     # Agent released the ticket — discard half-baked changes
     ticket --db "$TICKET_DB" comment "$TICKET_ID" \
       "Discarding code changes — ticket was released during work" --author "$AGENT_ID"
-    git checkout main 2>/dev/null || true
-    for branch in $(git for-each-ref --format='%(refname:short)' refs/heads/ | grep -v '^main$'); do
-      git branch -D "$branch" >/dev/null 2>&1 || true
-    done
-    git reset --hard origin/main 2>/dev/null || true
-    git clean -fd 2>/dev/null || true
+    sync_to_latest
     continue
   fi
 
@@ -259,12 +264,7 @@ $VERIFY_ERRORS" \
       ticket --db "$TICKET_DB" comment "$TICKET_ID" \
         "Verification still failing after $VERIFY_RETRIES retries, releasing ticket: $VERIFY_ERRORS" --author "$AGENT_ID"
       ticket --db "$TICKET_DB" unclaim "$TICKET_ID"
-      git checkout main 2>/dev/null || true
-      for branch in $(git for-each-ref --format='%(refname:short)' refs/heads/ | grep -v '^main$'); do
-        git branch -D "$branch" >/dev/null 2>&1 || true
-      done
-      git reset --hard origin/main 2>/dev/null || true
-      git clean -fd 2>/dev/null || true
+      sync_to_latest
       continue
     fi
 
