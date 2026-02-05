@@ -359,7 +359,7 @@ def api_update_ticket(ticket_id: int, body: dict) -> tuple[int, dict]:
         params = []
         changes = []
 
-        for field in ("title", "description", "status", "assigned_to"):
+        for field in ("title", "description", "status", "assigned_to", "type"):
             if field in body and body[field] is not None:
                 fields.append(f"{field} = ?")
                 params.append(body[field])
@@ -376,6 +376,117 @@ def api_update_ticket(ticket_id: int, body: dict) -> tuple[int, dict]:
         log_activity(conn, ticket_id, "human", "updated", "; ".join(changes))
         conn.commit()
         return 200, {"ok": True}
+    finally:
+        conn.close()
+
+
+def api_approve_ticket(ticket_id: int, body: dict) -> tuple[int, dict]:
+    """POST /api/tickets/:id/approve — approve a proposal ticket."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
+        ).fetchone()
+        if not row:
+            return 404, {"error": f"Ticket {ticket_id} not found"}
+
+        # Update description if provided (for "Approve with Edits")
+        if body.get("description"):
+            conn.execute(
+                "UPDATE tickets SET description = ? WHERE id = ?",
+                (body["description"], ticket_id),
+            )
+
+        # Set assigned_to = NULL and status = 'open' to make it claimable
+        conn.execute(
+            "UPDATE tickets SET assigned_to = NULL, status = 'open', "
+            "updated_at = datetime('now') WHERE id = ?",
+            (ticket_id,),
+        )
+
+        detail = "approved by human"
+        if body.get("description"):
+            detail += " (with edits)"
+        log_activity(conn, ticket_id, "human", "approved", detail)
+        conn.commit()
+        return 200, {"ok": True}
+    finally:
+        conn.close()
+
+
+def api_reject_ticket(ticket_id: int) -> tuple[int, dict]:
+    """POST /api/tickets/:id/reject — reject a proposal ticket."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
+        ).fetchone()
+        if not row:
+            return 404, {"error": f"Ticket {ticket_id} not found"}
+
+        conn.execute(
+            "UPDATE tickets SET status = 'done', updated_at = datetime('now') "
+            "WHERE id = ?",
+            (ticket_id,),
+        )
+        log_activity(conn, ticket_id, "human", "rejected", "rejected by human")
+        conn.commit()
+        return 200, {"ok": True}
+    finally:
+        conn.close()
+
+
+def api_answer_ticket(ticket_id: int, body: dict) -> tuple[int, dict]:
+    """POST /api/tickets/:id/answer — answer a question ticket and unblock dependents."""
+    answer = body.get("answer")
+    if not answer:
+        return 400, {"error": "answer is required"}
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
+        ).fetchone()
+        if not row:
+            return 404, {"error": f"Ticket {ticket_id} not found"}
+
+        # Post the answer as a comment on the question ticket
+        conn.execute(
+            "INSERT INTO comments (ticket_id, author, body) VALUES (?, ?, ?)",
+            (ticket_id, "human", answer),
+        )
+        log_activity(conn, ticket_id, "human", "answered", answer[:200])
+
+        # Find tickets blocked by this question and post the answer to them
+        blocked_tickets = conn.execute(
+            "SELECT ticket_id FROM blockers WHERE blocked_by = ?",
+            (ticket_id,),
+        ).fetchall()
+
+        unblocked_ids = []
+        for bt in blocked_tickets:
+            blocked_id = bt["ticket_id"]
+            # Post the answer as a comment on the blocked ticket
+            conn.execute(
+                "INSERT INTO comments (ticket_id, author, body) VALUES (?, ?, ?)",
+                (blocked_id, "human", f"Answer from ticket #{ticket_id}: {answer}"),
+            )
+            log_activity(
+                conn, blocked_id, "human", "commented",
+                f"Answer from question #{ticket_id}"
+            )
+            unblocked_ids.append(blocked_id)
+
+        # Mark the question ticket as done
+        conn.execute(
+            "UPDATE tickets SET status = 'done', updated_at = datetime('now') "
+            "WHERE id = ?",
+            (ticket_id,),
+        )
+        log_activity(conn, ticket_id, "human", "completed", "question answered")
+
+        conn.commit()
+        return 200, {"ok": True, "unblocked": unblocked_ids}
     finally:
         conn.close()
 
@@ -662,6 +773,29 @@ class MonitorHandler(BaseHTTPRequestHandler):
             if m and method == "POST":
                 body = self._read_body()
                 status, data = api_update_ticket(int(m.group(1)), body)
+                self._send_json(status, data)
+                return
+
+            # POST /api/tickets/:id/approve
+            m = re.match(r"^/api/tickets/(\d+)/approve$", path)
+            if m and method == "POST":
+                body = self._read_body()
+                status, data = api_approve_ticket(int(m.group(1)), body)
+                self._send_json(status, data)
+                return
+
+            # POST /api/tickets/:id/reject
+            m = re.match(r"^/api/tickets/(\d+)/reject$", path)
+            if m and method == "POST":
+                status, data = api_reject_ticket(int(m.group(1)))
+                self._send_json(status, data)
+                return
+
+            # POST /api/tickets/:id/answer
+            m = re.match(r"^/api/tickets/(\d+)/answer$", path)
+            if m and method == "POST":
+                body = self._read_body()
+                status, data = api_answer_ticket(int(m.group(1)), body)
                 self._send_json(status, data)
                 return
 

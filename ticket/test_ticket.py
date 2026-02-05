@@ -28,6 +28,13 @@ def run(args, expect_rc=0, db=None):
     return result
 
 
+def init_db(db):
+    """Initialize a fresh database by running migrations."""
+    result = run(["migrate"], db=db)
+    if result.returncode != 0:
+        raise RuntimeError(f"Migration failed: {result.stderr}")
+
+
 def assert_eq(label, actual, expected):
     global passed, failed
     if actual == expected:
@@ -68,6 +75,7 @@ def test_create_and_show():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         # Create a ticket
         r = run(["create", "First ticket", "--description", "Some details",
                  "--created-by", "agent-1"], db=db)
@@ -103,6 +111,7 @@ def test_update():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         run(["create", "Original title"], db=db)
 
         r = run(["update", "1", "--title", "Updated title", "--status", "in_progress",
@@ -131,6 +140,7 @@ def test_list():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         run(["create", "Task A"], db=db)
         run(["create", "Task B", "--assign", "agent-1"], db=db)
         run(["create", "Task C"], db=db)
@@ -171,6 +181,7 @@ def test_count():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         run(["create", "A"], db=db)
         run(["create", "B"], db=db)
         run(["create", "C"], db=db)
@@ -197,6 +208,7 @@ def test_claim_next():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         run(["create", "Task 1"], db=db)
         run(["create", "Task 2"], db=db)
         run(["create", "Task 3"], db=db)
@@ -236,6 +248,7 @@ def test_claim_next_with_blockers():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         # Create ticket 1 and ticket 2; ticket 2 is blocked by ticket 1
         run(["create", "Prerequisite"], db=db)
         run(["create", "Depends on prereq"], db=db)
@@ -275,6 +288,7 @@ def test_comment_and_comments():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         run(["create", "Commentable"], db=db)
 
         r = run(["comment", "1", "First comment", "--author", "agent-1"], db=db)
@@ -313,6 +327,7 @@ def test_complete_and_unclaim():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         run(["create", "Work item"], db=db)
         run(["claim-next", "--agent", "agent-1"], db=db)
 
@@ -351,6 +366,7 @@ def test_block_and_unblock():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         run(["create", "Ticket A"], db=db)
         run(["create", "Ticket B"], db=db)
 
@@ -391,6 +407,7 @@ def test_create_with_blocked_by():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         # Create ticket 1 (foundational task) first
         run(["create", "Setup database"], db=db)
 
@@ -417,6 +434,7 @@ def test_parent():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         run(["create", "Parent task"], db=db)
         r = run(["create", "Child task", "--parent", "1"], db=db)
         assert_eq("child id", r.stdout.strip(), "2")
@@ -433,6 +451,7 @@ def test_activity_log():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         run(["create", "Logged task", "--created-by", "agent-1"], db=db)
         run(["comment", "1", "A comment", "--author", "agent-1"], db=db)
         run(["claim-next", "--agent", "agent-2"], db=db)
@@ -459,6 +478,7 @@ def test_default_created_by():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         r = run(["create", "Human ticket"], db=db)
         r = run(["show", "1", "--format", "json"], db=db)
         data = json.loads(r.stdout)
@@ -472,6 +492,7 @@ def test_no_command():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        # No init needed - testing that no command gives help
         r = run([], db=db)
         assert_rc("no command rc", r, 2)
     finally:
@@ -483,6 +504,7 @@ def test_show_text_blockers():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         run(["create", "Task A"], db=db)
         run(["create", "Task B"], db=db)
         run(["block", "1", "--by", "2"], db=db)
@@ -503,6 +525,7 @@ def test_list_empty():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         r = run(["list"], db=db)
         assert_rc("list empty rc", r, 0)
         assert_in("list empty msg", r.stdout, "No tickets found")
@@ -519,6 +542,7 @@ def test_comments_empty():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         run(["create", "No comments"], db=db)
         r = run(["comments", "1"], db=db)
         assert_rc("comments empty rc", r, 0)
@@ -536,6 +560,7 @@ def test_show_with_comments():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         run(["create", "With comments"], db=db)
         run(["comment", "1", "Hello world", "--author", "tester"], db=db)
 
@@ -559,6 +584,7 @@ def test_block_auto_unclaims():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         # Create two tickets
         run(["create", "Main work"], db=db)
         run(["create", "Prerequisite"], db=db)
@@ -598,6 +624,7 @@ def test_mark_done():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         run(["create", "Mark done task"], db=db)
         run(["claim-next", "--agent", "agent-1"], db=db)
 
@@ -623,6 +650,7 @@ def test_update_rejects_done():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         run(["create", "Cannot update to done"], db=db)
 
         # Trying to update status to done should fail
@@ -638,6 +666,7 @@ def test_ready_still_blocks():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db = f.name
     try:
+        init_db(db)
         # Create ticket 1 and ticket 2; ticket 2 blocked by ticket 1
         run(["create", "Blocker task"], db=db)
         run(["create", "Dependent task"], db=db)
@@ -659,6 +688,106 @@ def test_ready_still_blocks():
         assert_rc("claim after done rc", r, 0)
         data = json.loads(r.stdout)
         assert_eq("claim gets ticket 2", data["id"], 2)
+    finally:
+        os.unlink(db)
+
+
+def test_ticket_type_defaults():
+    print("test_ticket_type_defaults")
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db = f.name
+    try:
+        init_db(db)
+
+        # Regular ticket defaults to 'task'
+        run(["create", "Regular task"], db=db)
+        r = run(["show", "1", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("regular type is task", data["type"], "task")
+
+        # Human-assigned ticket without blocker defaults to 'proposal'
+        run(["create", "Suggestion", "--assign", "human", "--created-by", "agent-1"], db=db)
+        r = run(["show", "2", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("human-assigned defaults to proposal", data["type"], "proposal")
+
+        # Human-assigned ticket with blocker defaults to 'question'
+        run(["create", "Need help", "--assign", "human", "--blocked-by", "1",
+             "--created-by", "agent-1"], db=db)
+        r = run(["show", "3", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("blocking human-assigned defaults to question", data["type"], "question")
+    finally:
+        os.unlink(db)
+
+
+def test_ticket_type_explicit():
+    print("test_ticket_type_explicit")
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db = f.name
+    try:
+        init_db(db)
+
+        # Explicit type overrides defaults
+        run(["create", "Explicit proposal", "--type", "proposal"], db=db)
+        r = run(["show", "1", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("explicit proposal type", data["type"], "proposal")
+
+        run(["create", "Explicit question", "--type", "question"], db=db)
+        r = run(["show", "2", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("explicit question type", data["type"], "question")
+
+        run(["create", "Explicit task", "--assign", "human", "--type", "task"], db=db)
+        r = run(["show", "3", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("explicit task type overrides default", data["type"], "task")
+    finally:
+        os.unlink(db)
+
+
+def test_ticket_type_update():
+    print("test_ticket_type_update")
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db = f.name
+    try:
+        init_db(db)
+
+        run(["create", "Change my type"], db=db)
+        r = run(["show", "1", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("initial type is task", data["type"], "task")
+
+        # Update type to proposal
+        run(["update", "1", "--type", "proposal"], db=db)
+        r = run(["show", "1", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("updated type is proposal", data["type"], "proposal")
+
+        # Update type to question
+        run(["update", "1", "--type", "question"], db=db)
+        r = run(["show", "1", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("updated type is question", data["type"], "question")
+    finally:
+        os.unlink(db)
+
+
+def test_migrate_command():
+    print("test_migrate_command")
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db = f.name
+    try:
+        # Migration on fresh DB should succeed
+        r = run(["migrate"], db=db)
+        assert_rc("migrate fresh rc", r, 0)
+        assert_in("migrate output", r.stdout, "version")
+
+        # Running migrate again should be a no-op
+        r = run(["migrate"], db=db)
+        assert_rc("migrate again rc", r, 0)
+        assert_in("already at version", r.stdout, "already at version")
     finally:
         os.unlink(db)
 
@@ -687,6 +816,10 @@ if __name__ == "__main__":
         test_mark_done,
         test_update_rejects_done,
         test_ready_still_blocks,
+        test_ticket_type_defaults,
+        test_ticket_type_explicit,
+        test_ticket_type_update,
+        test_migrate_command,
     ]
 
     for test in tests:

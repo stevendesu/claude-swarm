@@ -3,9 +3,9 @@
 
 Usage:
     ticket create "Title" [--description TEXT] [--parent ID] [--assign WHO]
-                          [--blocked-by ID] [--created-by WHO] [--db PATH]
+                          [--blocked-by ID] [--created-by WHO] [--type TYPE] [--db PATH]
     ticket update ID [--title TEXT] [--description TEXT] [--assign WHO]
-                     [--status STATUS] [--db PATH]
+                     [--status STATUS] [--type TYPE] [--db PATH]
     ticket list [--status STATUS] [--assigned-to WHO] [--format FMT] [--db PATH]
     ticket show ID [--format FMT] [--db PATH]
     ticket count [--status STATUS] [--db PATH]
@@ -17,11 +17,13 @@ Usage:
     ticket block ID --by ID [--db PATH]
     ticket unblock ID --by ID [--db PATH]
     ticket log [--limit N] [--db PATH]
+    ticket migrate [--db PATH]
 """
 
 import argparse
 import json
 import os
+from pathlib import Path
 import sqlite3
 import sys
 import textwrap
@@ -47,57 +49,110 @@ DEFAULT_DB = os.environ.get("TICKET_DB") or _find_swarm_db()
 # Database helpers
 # ---------------------------------------------------------------------------
 
-SCHEMA = """\
-CREATE TABLE IF NOT EXISTS tickets (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  title       TEXT NOT NULL,
-  description TEXT,
-  status      TEXT NOT NULL DEFAULT 'open',
-  assigned_to TEXT,
-  parent_id   INTEGER REFERENCES tickets(id),
-  created_by  TEXT NOT NULL,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS blockers (
-  ticket_id   INTEGER NOT NULL REFERENCES tickets(id),
-  blocked_by  INTEGER NOT NULL REFERENCES tickets(id),
-  PRIMARY KEY (ticket_id, blocked_by)
-);
-
-CREATE TABLE IF NOT EXISTS comments (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  ticket_id   INTEGER NOT NULL REFERENCES tickets(id),
-  author      TEXT NOT NULL,
-  body        TEXT NOT NULL,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS activity_log (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  ticket_id   INTEGER,
-  agent_id    TEXT,
-  action      TEXT NOT NULL,
-  detail      TEXT,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
-CREATE INDEX IF NOT EXISTS idx_tickets_assigned ON tickets(assigned_to);
-CREATE INDEX IF NOT EXISTS idx_tickets_parent ON tickets(parent_id);
-CREATE INDEX IF NOT EXISTS idx_comments_ticket ON comments(ticket_id);
-CREATE INDEX IF NOT EXISTS idx_activity_log_ticket ON activity_log(ticket_id);
-"""
+MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
-def connect(db_path: str) -> sqlite3.Connection:
-    """Open (and initialise) the database."""
+def get_expected_version() -> int:
+    """Derive expected schema version from highest-numbered migration file."""
+    if not MIGRATIONS_DIR.exists():
+        return 0
+    versions = []
+    for f in MIGRATIONS_DIR.glob("*.sql"):
+        try:
+            versions.append(int(f.name.split("_")[0]))
+        except ValueError:
+            pass
+    return max(versions) if versions else 0
+
+
+def get_current_version(conn: sqlite3.Connection) -> int | None:
+    """Read schema version from database. Returns None if no schema_version table."""
+    try:
+        row = conn.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").fetchone()
+        return row[0] if row else None
+    except sqlite3.OperationalError:
+        # Table doesn't exist
+        return None
+
+
+def check_version(conn: sqlite3.Connection) -> None:
+    """Verify database schema version matches expected. Exits with error if mismatch."""
+    current = get_current_version(conn)
+    expected = get_expected_version()
+
+    if current is None:
+        print("Error: Database not initialized. Run 'ticket migrate' first.", file=sys.stderr)
+        sys.exit(1)
+    if current < expected:
+        print(f"Error: Database schema outdated (v{current}, need v{expected}). "
+              "Run 'ticket migrate'.", file=sys.stderr)
+        sys.exit(1)
+    if current > expected:
+        print(f"Error: Database schema newer than code (v{current} > v{expected}). "
+              "Update your swarm toolkit.", file=sys.stderr)
+        sys.exit(1)
+
+
+def run_migrations(db_path: str) -> None:
+    """Run all pending migrations on the database."""
+    # Create parent directories if needed
+    db_dir = os.path.dirname(db_path)
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir)
+
     conn = sqlite3.connect(db_path, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
-    conn.executescript(SCHEMA)
+
+    current = get_current_version(conn)
+    if current is None:
+        current = 0  # For migration purposes, treat missing as 0
+
+    if not MIGRATIONS_DIR.exists():
+        print(f"Error: Migrations directory not found: {MIGRATIONS_DIR}", file=sys.stderr)
+        sys.exit(1)
+
+    migration_files = sorted(MIGRATIONS_DIR.glob("*.sql"))
+    if not migration_files:
+        print("No migrations found.", file=sys.stderr)
+        sys.exit(1)
+
+    applied_any = False
+    for migration_file in migration_files:
+        try:
+            version = int(migration_file.name.split("_")[0])
+        except ValueError:
+            continue
+
+        if version > current:
+            print(f"Applying migration {migration_file.name}...")
+            sql = migration_file.read_text()
+            conn.executescript(sql)
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_version (version, applied_at) "
+                "VALUES (?, datetime('now'))",
+                (version,),
+            )
+            conn.commit()
+            applied_any = True
+
+    expected = get_expected_version()
+    if applied_any:
+        print(f"Database migrated to version {expected}.")
+    else:
+        print(f"Database already at version {expected}.")
+
+    conn.close()
+
+
+def connect(db_path: str) -> sqlite3.Connection:
+    """Open the database and verify schema version."""
+    conn = sqlite3.connect(db_path, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.row_factory = sqlite3.Row
+    check_version(conn)
     return conn
 
 
@@ -124,18 +179,20 @@ def print_ticket_table(rows):
     if not rows:
         print("No tickets found.")
         return
-    header = f"{'ID':>5}  {'Status':<14}  {'Assigned':<14}  Title"
+    header = f"{'ID':>5}  {'Status':<14}  {'Type':<10}  {'Assigned':<14}  Title"
     print(header)
     print("-" * len(header))
     for r in rows:
         assigned = r["assigned_to"] or ""
-        print(f"{r['id']:>5}  {r['status']:<14}  {assigned:<14}  {r['title']}")
+        ttype = r["type"] or "task"
+        print(f"{r['id']:>5}  {r['status']:<14}  {ttype:<10}  {assigned:<14}  {r['title']}")
 
 
 def print_ticket_detail(conn, row):
     """Print full detail for a single ticket in text format."""
     print(f"Ticket #{row['id']}")
     print(f"  Title:       {row['title']}")
+    print(f"  Type:        {row['type'] or 'task'}")
     print(f"  Status:      {row['status']}")
     print(f"  Assigned:    {row['assigned_to'] or '(none)'}")
     print(f"  Created by:  {row['created_by']}")
@@ -204,10 +261,22 @@ def cmd_create(args):
         print("Error: ticket title cannot be empty.", file=sys.stderr)
         sys.exit(1)
     conn = connect(args.db)
+
+    # Determine ticket type (default based on context)
+    ticket_type = args.type
+    if ticket_type is None:
+        # Smart defaults: if assigned to human with a blocker, it's likely a question
+        # If assigned to human standalone, it's likely a proposal
+        # Otherwise it's a task
+        if args.assign == "human":
+            ticket_type = "question" if args.blocked_by else "proposal"
+        else:
+            ticket_type = "task"
+
     cur = conn.execute(
-        "INSERT INTO tickets (title, description, parent_id, assigned_to, created_by) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (args.title, args.description, args.parent, args.assign, args.created_by),
+        "INSERT INTO tickets (title, description, parent_id, assigned_to, created_by, type) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (args.title, args.description, args.parent, args.assign, args.created_by, ticket_type),
     )
     new_id = cur.lastrowid
 
@@ -255,6 +324,10 @@ def cmd_update(args):
         fields.append("status = ?")
         params.append(args.status)
         changes.append(f"status -> {args.status}")
+    if args.type is not None:
+        fields.append("type = ?")
+        params.append(args.type)
+        changes.append(f"type -> {args.type}")
 
     if not fields:
         print("Nothing to update.", file=sys.stderr)
@@ -537,6 +610,11 @@ def cmd_log(args):
               f"{agent_str:<14} {r['detail'] or ''}")
 
 
+def cmd_migrate(args):
+    """Run database migrations."""
+    run_migrations(args.db)
+
+
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
@@ -560,6 +638,8 @@ def build_parser():
                    help="ID of ticket that must complete before this one")
     p.add_argument("--created-by", default="human", dest="created_by",
                    help="Creator identifier (default: human)")
+    p.add_argument("--type", default=None, choices=["task", "proposal", "question"],
+                   help="Ticket type (default: auto-detected)")
 
     # update
     p = sub.add_parser("update", help="Update a ticket")
@@ -568,6 +648,7 @@ def build_parser():
     p.add_argument("--description", default=None)
     p.add_argument("--assign", default=None)
     p.add_argument("--status", default=None)
+    p.add_argument("--type", default=None, choices=["task", "proposal", "question"])
 
     # list
     p = sub.add_parser("list", help="List tickets")
@@ -628,6 +709,9 @@ def build_parser():
     p = sub.add_parser("log", help="Show activity log")
     p.add_argument("--limit", type=int, default=20, help="Max entries to show")
 
+    # migrate
+    sub.add_parser("migrate", help="Run database migrations")
+
     return parser
 
 
@@ -646,6 +730,7 @@ DISPATCH = {
     "block": cmd_block,
     "unblock": cmd_unblock,
     "log": cmd_log,
+    "migrate": cmd_migrate,
 }
 
 

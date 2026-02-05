@@ -51,9 +51,20 @@ All commands use `ticket --db /tickets/tickets.db`.
 | Break down work | `create "Sub-task" --parent <ID> --created-by $AGENT_ID` |
 | Depends on other work | `create "Task" --blocked-by <PREREQUISITE_ID> --created-by $AGENT_ID` |
 | Mark blocked | `block <ID> --by <BLOCKER_ID>` (auto-releases the ticket) |
-| Ask humans | `create "Question" --assign human --created-by $AGENT_ID` then `block <YOUR_ID> --by <QUESTION_ID>` |
+| Ask humans | `create "Question" --assign human --blocked-by <YOUR_ID> --created-by $AGENT_ID` |
+| Propose improvement | `create "Suggestion" --assign human --type proposal --created-by $AGENT_ID` |
 | Release if stuck | `unclaim <ID>` |
 | Signal work finished | `complete <ID>` |
+
+## Ticket Types
+
+- **task** (default): Normal work for agents to complete
+- **question**: You need human input before continuing. Use `--blocked-by` to block your current ticket.
+- **proposal**: Suggesting an improvement. Human will approve/reject. No blocker needed.
+
+When creating a human-assigned ticket:
+- With `--blocked-by`: defaults to `question` type
+- Without `--blocked-by`: defaults to `proposal` type
 
 ## Dependencies
 
@@ -267,7 +278,7 @@ def cmd_init(args):
     else:
         print(f"  Warning: {agent_src} not found — skipping agent file copy.")
 
-    # ── 3. Copy ticket/ files ───────────────────────────────────────────
+    # ── 3. Copy ticket/ files (including migrations/) ───────────────────
     ticket_src = os.path.join(PROJECT_ROOT_OF_SWARM, "ticket")
     if os.path.isdir(ticket_src):
         for fname in os.listdir(ticket_src):
@@ -276,6 +287,13 @@ def cmd_init(args):
             if os.path.isfile(src):
                 shutil.copy2(src, dst)
                 print(f"  Copied ticket/{fname}")
+            elif os.path.isdir(src) and fname == "migrations":
+                # Copy migrations directory
+                migrations_dst = os.path.join(swarm_dir, "ticket", "migrations")
+                if os.path.isdir(migrations_dst):
+                    shutil.rmtree(migrations_dst)
+                shutil.copytree(src, migrations_dst)
+                print(f"  Copied ticket/migrations/")
     else:
         print(f"  Warning: {ticket_src} not found — skipping ticket file copy.")
 
@@ -301,16 +319,18 @@ def cmd_init(args):
     save_config(project_dir, config)
     print("  Created config.json")
 
-    # ── 6. Initialize SQLite database ───────────────────────────────────
+    # ── 6. Initialize SQLite database via migrations ────────────────────
     tickets_db_path = os.path.join(swarm_dir, "tickets", "tickets.db")
     ticket_py = os.path.join(swarm_dir, "ticket", "ticket.py")
     if os.path.isfile(ticket_py):
-        # Run 'ticket list' which triggers auto-init of the schema
-        subprocess.run(
-            [sys.executable, ticket_py, "--db", tickets_db_path, "list"],
-            capture_output=True,
+        result = subprocess.run(
+            [sys.executable, ticket_py, "--db", tickets_db_path, "migrate"],
+            capture_output=True, text=True,
         )
-        print("  Initialized tickets.db")
+        if result.returncode == 0:
+            print("  Initialized tickets.db")
+        else:
+            print(f"  Warning: Migration failed: {result.stderr.strip()}")
     else:
         print("  Warning: ticket.py not found — database not initialized.")
 
@@ -566,6 +586,19 @@ def cmd_start(args):
             f.write(compose_content)
         print("Regenerated docker-compose.yml from config.")
 
+    # Run database migrations before starting
+    ticket_py = os.path.join(project_dir, ".swarm", "ticket", "ticket.py")
+    tickets_db = os.path.join(project_dir, ".swarm", "tickets", "tickets.db")
+    if os.path.isfile(ticket_py):
+        print("Running database migrations...")
+        result = subprocess.run(
+            [sys.executable, ticket_py, "--db", tickets_db, "migrate"],
+            cwd=project_dir,
+        )
+        if result.returncode != 0:
+            print("Error: Database migration failed.", file=sys.stderr)
+            sys.exit(1)
+
     preferred = config.get("monitor_port", 3000)
     actual = find_free_port(preferred)
     if actual != preferred:
@@ -730,7 +763,7 @@ def cmd_regenerate(args):
                 shutil.copy2(src, dst)
         print("Updated agent/ files")
 
-    # Re-copy ticket/ files
+    # Re-copy ticket/ files (including migrations/)
     ticket_src = os.path.join(PROJECT_ROOT_OF_SWARM, "ticket")
     if os.path.isdir(ticket_src):
         for fname in os.listdir(ticket_src):
@@ -738,6 +771,11 @@ def cmd_regenerate(args):
             dst = os.path.join(swarm_dir, "ticket", fname)
             if os.path.isfile(src):
                 shutil.copy2(src, dst)
+            elif os.path.isdir(src) and fname == "migrations":
+                migrations_dst = os.path.join(swarm_dir, "ticket", "migrations")
+                if os.path.isdir(migrations_dst):
+                    shutil.rmtree(migrations_dst)
+                shutil.copytree(src, migrations_dst)
         print("Updated ticket/ files")
 
     # Re-copy monitor/ files

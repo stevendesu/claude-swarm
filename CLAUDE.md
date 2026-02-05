@@ -13,6 +13,7 @@ ai-project-manager/              # This repo (the swarm toolkit)
   ticket/
     ticket.py                     # SQLite-backed CLI for task management (Python, stdlib only)
     test_ticket.py                # Test suite (run with: python -m pytest ticket/)
+    migrations/                   # SQL migration scripts (001_*.sql, 002_*.sql, etc.)
   monitor/
     Dockerfile                    # Web dashboard container
     server.py                     # Dashboard backend (Python, stdlib only)
@@ -30,7 +31,7 @@ target-project/
     agent/                        # Copied from ai-project-manager/agent/
       Dockerfile, entrypoint.sh, agent-loop.sh
     ticket/                       # Copied from ai-project-manager/ticket/
-      ticket.py
+      ticket.py, migrations/
     monitor/                      # Copied from ai-project-manager/monitor/
       Dockerfile, server.py, static/
     tickets/
@@ -108,16 +109,27 @@ In `generate_docker_compose()`, the build context is `.swarm` with `dockerfile: 
 
 ### Database
 
-SQLite in WAL mode. Schema has four tables:
+SQLite in WAL mode. Schema is managed via migrations in `ticket/migrations/`. Current schema version: 2.
 
 ```sql
-tickets    (id, title, description, status, assigned_to, parent_id, created_by, created_at, updated_at)
+schema_version (version, applied_at)        -- tracks migration state
+tickets    (id, title, description, status, type, assigned_to, parent_id, created_by, created_at, updated_at)
 blockers   (ticket_id, blocked_by)          -- composite PK
 comments   (id, ticket_id, author, body, created_at)
 activity_log (id, ticket_id, agent_id, action, detail, created_at)
 ```
 
 Indexes on: `tickets.status`, `tickets.assigned_to`, `tickets.parent_id`, `comments.ticket_id`, `activity_log.ticket_id`.
+
+### Migrations
+
+Database schema changes are managed via SQL migration files in `ticket/migrations/`. Each file is numbered (e.g., `001_initial_schema.sql`, `002_add_ticket_type.sql`).
+
+- `swarm init` runs migrations when creating a new database
+- `swarm start` runs pending migrations before spinning up containers
+- `ticket migrate` can be run manually to apply pending migrations
+
+Every `ticket` command checks the schema version and errors if the database needs migration.
 
 ### Status values
 
@@ -130,12 +142,28 @@ Indexes on: `tickets.status`, `tickets.assigned_to`, `tickets.parent_id`, `comme
 
 There is **no `blocked` status**. Whether a ticket is blocked is derived from the `blockers` table at query time — if a ticket has entries pointing to non-`done` tickets, it is blocked. The `claim-next` command skips these automatically.
 
+### Ticket types
+
+| Type       | Purpose | Default when |
+|------------|---------|--------------|
+| `task`     | Normal work item for agents | Default for all tickets |
+| `proposal` | Agent suggestion awaiting human approval | `--assign human` without blockers |
+| `question` | Agent needs human input before proceeding | `--assign human` with `--blocked-by` |
+
+Types enable the dashboard to show appropriate actions:
+- **task**: Standard claim/complete workflow
+- **proposal**: Approve / Approve with Edits / Reject buttons
+- **question**: Answer & Unblock (posts answer to blocked ticket, marks question done)
+
+Smart defaults: when creating a ticket assigned to `human`, the type defaults to `proposal` if standalone or `question` if it blocks another ticket. Use `--type` to override.
+
 ### CLI commands
 
 ```bash
 ticket create "Title" [--description TEXT] [--parent ID] [--assign WHO]
-                       [--blocked-by ID] [--created-by WHO]
+                       [--blocked-by ID] [--created-by WHO] [--type task|proposal|question]
 ticket update ID [--title TEXT] [--description TEXT] [--assign WHO] [--status STATUS]
+                 [--type task|proposal|question]
 ticket list [--status STATUS] [--assigned-to WHO] [--format text|json]
 ticket show ID [--format text|json]
 ticket count [--status STATUS]             # STATUS can be comma-separated: open,in_progress
@@ -148,6 +176,7 @@ ticket unclaim ID
 ticket block ID --by ID
 ticket unblock ID --by ID
 ticket log [--limit N]
+ticket migrate                             # Run pending database migrations
 ```
 
 Database is found by: `--db` flag > `TICKET_DB` env var > walking up from cwd looking for `.swarm/tickets/tickets.db` > `./tickets.db`.

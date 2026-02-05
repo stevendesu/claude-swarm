@@ -136,6 +136,11 @@ textarea { resize: vertical; min-height: 80px; }
 .badge-blocked { background: rgba(240,96,96,0.15); color: var(--status-blocked); }
 .badge-human { background: rgba(240,148,62,0.15); color: var(--status-human); }
 
+/* Ticket Type Badges */
+.badge-type-task { background: #444; color: var(--text); }
+.badge-type-proposal { background: rgba(133, 100, 4, 0.8); color: #fff; }
+.badge-type-question { background: rgba(12, 84, 96, 0.8); color: #fff; }
+
 /* ---- Ticket Cards ---- */
 .ticket-group { margin-bottom: 2rem; }
 .ticket-group h2 {
@@ -576,6 +581,11 @@ function statusBadge(status) {
   return `<span class="badge badge-${status}">${status.replace('_', ' ')}</span>`;
 }
 
+function typeBadge(type) {
+  if (!type || type === 'task') return '';
+  return `<span class="badge badge-type-${type}">${type}</span>`;
+}
+
 function renderTicketCard(t) {
   const isHuman = t.assigned_to === 'human' && t.status !== 'done';
   const highlight = isHuman ? ' human-highlight' : '';
@@ -592,6 +602,7 @@ function renderTicketCard(t) {
       <div class="ticket-meta">${meta.map(esc).join(' &middot; ')}</div>
     </div>
     <div class="ticket-badges">
+      ${typeBadge(t.type)}
       ${t.is_blocked ? '<span class="badge badge-blocked">blocked</span>' : ''}
       ${statusBadge(t.status)}
     </div>
@@ -653,6 +664,7 @@ async function openTicket(id) {
   // Status and metadata grid
   html += '<div class="detail-grid">';
   html += `<div class="detail-label">Status</div><div>${statusBadge(data.status)}</div>`;
+  html += `<div class="detail-label">Type</div><div>${typeBadge(data.type) || '<span class="badge badge-type-task">task</span>'}</div>`;
   html += `<div class="detail-label">Assigned</div><div>${esc(data.assigned_to || '(none)')}</div>`;
   html += `<div class="detail-label">Created by</div><div>${esc(data.created_by)}</div>`;
   if (data.parent_id) {
@@ -724,13 +736,30 @@ async function openTicket(id) {
   </div>`;
   html += '</div>';
 
-  // Actions
+  // Actions - type-specific
   html += '<div class="detail-actions">';
+
   if (data.status !== 'done') {
-    html += `<button onclick="completeTicket(${data.id})">Mark Done</button>`;
-    html += `<button class="secondary" onclick="showReassign(${data.id})">Reassign</button>`;
+    const ticketType = data.type || 'task';
+    const isHumanAssigned = data.assigned_to === 'human';
+
+    if (isHumanAssigned && ticketType === 'proposal') {
+      // Proposal actions: Approve, Approve with Edits, Reject
+      html += `<button onclick="approveTicket(${data.id})">Approve</button>`;
+      html += `<button class="secondary" onclick="showApproveWithEdits(${data.id})">Approve with Edits</button>`;
+      html += `<button class="danger" onclick="rejectTicket(${data.id})">Reject</button>`;
+    } else if (isHumanAssigned && ticketType === 'question') {
+      // Question actions: Answer & Unblock
+      html += `<button onclick="showAnswerForm(${data.id})">Answer & Unblock</button>`;
+    } else {
+      // Task or unassigned: standard actions
+      html += `<button onclick="completeTicket(${data.id})">Mark Done</button>`;
+      html += `<button class="secondary" onclick="showReassign(${data.id})">Reassign</button>`;
+    }
   }
+
   html += `<button class="secondary" onclick="showUpdateStatus(${data.id})">Change Status</button>`;
+  html += `<button class="secondary" onclick="showChangeType(${data.id})">Change Type</button>`;
   html += '</div>';
 
   // Reassign inline form (hidden)
@@ -751,6 +780,38 @@ async function openTicket(id) {
         <option value="done">done</option>
       </select>
       <button onclick="updateTicketStatus(${data.id})">Save</button>
+    </div>
+  </div>`;
+
+  // Change type inline form (hidden)
+  html += `<div id="type-form" style="display:none;margin-top:0.75rem;">
+    <div style="display:flex;gap:0.5rem;">
+      <select id="type-input">
+        <option value="task"${(data.type || 'task') === 'task' ? ' selected' : ''}>task</option>
+        <option value="proposal"${data.type === 'proposal' ? ' selected' : ''}>proposal</option>
+        <option value="question"${data.type === 'question' ? ' selected' : ''}>question</option>
+      </select>
+      <button onclick="updateTicketType(${data.id})">Save</button>
+    </div>
+  </div>`;
+
+  // Approve with Edits form (hidden)
+  html += `<div id="approve-edit-form" style="display:none;margin-top:0.75rem;">
+    <label style="font-size:0.8rem;color:var(--text-dim);display:block;margin-bottom:0.25rem;">Edit description before approving:</label>
+    <textarea id="approve-edit-desc" style="min-height:100px;">${esc(data.description || '')}</textarea>
+    <div style="display:flex;gap:0.5rem;margin-top:0.5rem;">
+      <button onclick="approveTicketWithEdits(${data.id})">Approve with Edits</button>
+      <button class="secondary" onclick="hideForm('approve-edit-form')">Cancel</button>
+    </div>
+  </div>`;
+
+  // Answer form (hidden)
+  html += `<div id="answer-form" style="display:none;margin-top:0.75rem;">
+    <label style="font-size:0.8rem;color:var(--text-dim);display:block;margin-bottom:0.25rem;">Your answer:</label>
+    <textarea id="answer-input" placeholder="Type your answer here..."></textarea>
+    <div style="display:flex;gap:0.5rem;margin-top:0.5rem;">
+      <button onclick="answerTicket(${data.id})">Submit Answer & Unblock</button>
+      <button class="secondary" onclick="hideForm('answer-form')">Cancel</button>
     </div>
   </div>`;
 
@@ -808,6 +869,79 @@ async function updateTicketStatus(id) {
   const val = document.getElementById('status-input').value;
   await api('POST', '/api/tickets/' + id + '/update', { status: val });
   openTicket(id);
+}
+
+// Type-specific actions
+
+function showChangeType(id) {
+  const form = document.getElementById('type-form');
+  form.style.display = form.style.display === 'none' ? 'block' : 'none';
+}
+
+async function updateTicketType(id) {
+  const val = document.getElementById('type-input').value;
+  await api('POST', '/api/tickets/' + id + '/update', { type: val });
+  openTicket(id);
+}
+
+async function approveTicket(id) {
+  if (!confirm('Approve this proposal? It will become available for agents to claim.')) return;
+  await api('POST', '/api/tickets/' + id + '/approve', {});
+  closeModal();
+  refresh();
+}
+
+function showApproveWithEdits(id) {
+  hideAllForms();
+  document.getElementById('approve-edit-form').style.display = 'block';
+}
+
+async function approveTicketWithEdits(id) {
+  const desc = document.getElementById('approve-edit-desc').value;
+  await api('POST', '/api/tickets/' + id + '/approve', { description: desc });
+  closeModal();
+  refresh();
+}
+
+async function rejectTicket(id) {
+  if (!confirm('Reject this proposal? It will be marked as done without being worked on.')) return;
+  await api('POST', '/api/tickets/' + id + '/reject');
+  closeModal();
+  refresh();
+}
+
+function showAnswerForm(id) {
+  hideAllForms();
+  document.getElementById('answer-form').style.display = 'block';
+}
+
+async function answerTicket(id) {
+  const answer = document.getElementById('answer-input').value.trim();
+  if (!answer) {
+    alert('Please provide an answer');
+    return;
+  }
+  const result = await api('POST', '/api/tickets/' + id + '/answer', { answer });
+  if (result.ok) {
+    let msg = 'Answer submitted!';
+    if (result.unblocked && result.unblocked.length > 0) {
+      msg += ' Unblocked tickets: #' + result.unblocked.join(', #');
+    }
+    alert(msg);
+  }
+  closeModal();
+  refresh();
+}
+
+function hideForm(formId) {
+  document.getElementById(formId).style.display = 'none';
+}
+
+function hideAllForms() {
+  ['reassign-form', 'status-form', 'type-form', 'approve-edit-form', 'answer-form'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
 }
 
 // ---------------------------------------------------------------------------
