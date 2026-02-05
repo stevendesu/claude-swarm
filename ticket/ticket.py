@@ -49,7 +49,7 @@ DEFAULT_DB = os.environ.get("TICKET_DB") or _find_swarm_db()
 # Database helpers
 # ---------------------------------------------------------------------------
 
-MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
 
 def get_expected_version() -> int:

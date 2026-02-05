@@ -14,6 +14,7 @@ RUN npm install -g @anthropic-ai/claude-code
 
 # ── Ticket CLI ───────────────────────────────────────────────────────────
 COPY ticket/ticket.py /usr/local/lib/ticket.py
+COPY ticket/migrations /usr/local/lib/migrations
 RUN ln -s /usr/local/lib/ticket.py /usr/local/bin/ticket && \
     chmod +x /usr/local/lib/ticket.py
 
