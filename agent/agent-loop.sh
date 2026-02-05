@@ -10,6 +10,24 @@ MAX_TURNS="${MAX_TURNS:-50}"
 ALLOWED_TOOLS="${ALLOWED_TOOLS:-Bash,Read,Write,Edit,Glob,Grep}"
 LOG_DIR="/workspace/.agent-logs"
 
+# Track current ticket for graceful shutdown
+CURRENT_TICKET_ID=""
+
+# ── Graceful shutdown handler ────────────────────────────────────────────────
+# When the container receives SIGTERM (docker stop) or SIGINT (Ctrl+C),
+# unclaim any in-progress ticket so it returns to the pool.
+cleanup() {
+    echo "[$AGENT_ID] Received shutdown signal, cleaning up..."
+    if [ -n "$CURRENT_TICKET_ID" ]; then
+        ticket --db "$TICKET_DB" comment "$CURRENT_TICKET_ID" \
+            "Agent $AGENT_ID shutting down, releasing ticket" --author "$AGENT_ID" || true
+        ticket --db "$TICKET_DB" unclaim "$CURRENT_TICKET_ID" || true
+        echo "[$AGENT_ID] Released ticket #$CURRENT_TICKET_ID"
+    fi
+    exit 0
+}
+trap cleanup SIGTERM SIGINT
+
 mkdir -p "$LOG_DIR"
 cd "$WORKSPACE"
 
@@ -67,6 +85,7 @@ while true; do
 
   # Extract ticket details
   TICKET_ID=$(echo "$TICKET_JSON" | jq -r '.id')
+  CURRENT_TICKET_ID="$TICKET_ID"  # Track for graceful shutdown
   TITLE=$(echo "$TICKET_JSON" | jq -r '.title')
   DESC=$(echo "$TICKET_JSON" | jq -r '.description // ""')
   COMMENTS=$(ticket --db "$TICKET_DB" comments "$TICKET_ID" --format text 2>/dev/null || echo "")
@@ -239,5 +258,6 @@ Read CLAUDE.md for full operating guidelines." \
   fi
 
   # Clean up for next iteration
+  CURRENT_TICKET_ID=""  # Clear ticket tracking (no longer our responsibility)
   git checkout main 2>/dev/null || true
 done

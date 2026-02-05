@@ -17,6 +17,7 @@ import os
 import signal
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -269,7 +270,7 @@ def cmd_init(args):
     # ── 2. Copy agent/ files ────────────────────────────────────────────
     agent_src = os.path.join(PROJECT_ROOT_OF_SWARM, "agent")
     if os.path.isdir(agent_src):
-        for fname in ("agent-loop.sh", "entrypoint.sh", "Dockerfile"):
+        for fname in ("agent-loop.sh", "entrypoint.sh", "Dockerfile", "check-alive.sh"):
             src = os.path.join(agent_src, fname)
             dst = os.path.join(swarm_dir, "agent", fname)
             if os.path.isfile(src):
@@ -573,6 +574,50 @@ def extract_oauth_token():
         return None
 
 
+def unclaim_all_in_progress(project_dir):
+    """Reset all in_progress tickets to open status.
+
+    Called on swarm start to clean up tickets that were left in_progress
+    when the swarm was previously stopped (e.g., container crash, scale-down,
+    OAuth expiry, OOM).
+
+    Returns the number of tickets that were reset.
+    """
+    tickets_db = os.path.join(project_dir, ".swarm", "tickets", "tickets.db")
+    if not os.path.isfile(tickets_db):
+        return 0
+
+    conn = sqlite3.connect(tickets_db, timeout=10)
+
+    # Find affected tickets first (so we can log activity for each)
+    in_progress = conn.execute(
+        "SELECT id, assigned_to FROM tickets WHERE status = 'in_progress'"
+    ).fetchall()
+
+    if not in_progress:
+        conn.close()
+        return 0
+
+    # Log activity for each ticket before updating
+    for ticket_id, agent_id in in_progress:
+        conn.execute(
+            "INSERT INTO activity_log (ticket_id, agent_id, action, detail) "
+            "VALUES (?, ?, 'unclaimed', 'Auto-released on swarm start')",
+            (ticket_id, agent_id)
+        )
+
+    # Update all at once
+    conn.execute("""
+        UPDATE tickets
+        SET status = 'open', assigned_to = NULL, updated_at = datetime('now')
+        WHERE status = 'in_progress'
+    """)
+
+    conn.commit()
+    conn.close()
+    return len(in_progress)
+
+
 def cmd_start(args):
     """Spin up agent containers and monitor."""
     project_dir = find_project_dir()
@@ -585,6 +630,11 @@ def cmd_start(args):
         with open(compose_file, "w") as f:
             f.write(compose_content)
         print("Regenerated docker-compose.yml from config.")
+
+    # Unclaim any stuck in_progress tickets from previous run
+    count = unclaim_all_in_progress(project_dir)
+    if count > 0:
+        print(f"Released {count} stuck in_progress ticket(s) from previous run.")
 
     # Run database migrations before starting
     ticket_py = os.path.join(project_dir, ".swarm", "ticket", "ticket.py")
@@ -756,7 +806,7 @@ def cmd_regenerate(args):
     # Re-copy agent/ files
     agent_src = os.path.join(PROJECT_ROOT_OF_SWARM, "agent")
     if os.path.isdir(agent_src):
-        for fname in ("agent-loop.sh", "entrypoint.sh", "Dockerfile"):
+        for fname in ("agent-loop.sh", "entrypoint.sh", "Dockerfile", "check-alive.sh"):
             src = os.path.join(agent_src, fname)
             dst = os.path.join(swarm_dir, "agent", fname)
             if os.path.isfile(src):

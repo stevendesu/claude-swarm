@@ -10,6 +10,7 @@ ai-project-manager/              # This repo (the swarm toolkit)
     Dockerfile                    # Agent container image definition
     entrypoint.sh                 # Container startup: validates env, clones repo, starts loop
     agent-loop.sh                 # Main autonomous loop: claim tickets, run claude, git workflow
+    check-alive.sh                # Cron script: detects stalled agents, triggers restart
   ticket/
     ticket.py                     # SQLite-backed CLI for task management (Python, stdlib only)
     test_ticket.py                # Test suite (run with: python -m pytest ticket/)
@@ -29,7 +30,7 @@ A target project after `swarm init`:
 target-project/
   .swarm/
     agent/                        # Copied from ai-project-manager/agent/
-      Dockerfile, entrypoint.sh, agent-loop.sh
+      Dockerfile, entrypoint.sh, agent-loop.sh, check-alive.sh
     ticket/                       # Copied from ai-project-manager/ticket/
       ticket.py, migrations/
     monitor/                      # Copied from ai-project-manager/monitor/
@@ -193,7 +194,7 @@ No automatic status changes when a blocker is resolved. Only `done` status unblo
 
 ### Image
 
-Base: `node:lts-slim`. Installs: git, jq, curl, python3, Claude Code CLI (`npm install -g @anthropic-ai/claude-code`). Copies: `ticket.py`, `agent-loop.sh`, `entrypoint.sh`.
+Base: `node:lts-slim`. Installs: git, jq, curl, python3, cron, procps, Claude Code CLI (`npm install -g @anthropic-ai/claude-code`). Copies: `ticket.py`, `agent-loop.sh`, `entrypoint.sh`, `check-alive.sh`. Sets up crontab for stall detection.
 
 ### Volumes
 
@@ -222,7 +223,8 @@ Base: `node:lts-slim`. Installs: git, jq, curl, python3, Claude Code CLI (`npm i
 3. Clones from `/repo.git` into `/workspace` (or fetches if already exists)
 4. Configures git identity as the agent ID (`user.name=$AGENT_ID`, `user.email=agent@swarm.local`)
 5. Exports `TICKET_DB=/tickets/tickets.db`
-6. Execs `agent-loop.sh`
+6. Starts cron daemon for stall detection (runs `check-alive.sh` every 5 minutes)
+7. Execs `agent-loop.sh`
 
 ### Agent loop (agent-loop.sh)
 
@@ -250,6 +252,22 @@ Infinite loop:
 - **Unclaiming on failure.** If the agent gets stuck or a merge fails, the ticket is unclaimed and returns to the pool.
 - **Parent context injection.** If a ticket has a parent, the parent's details are included in the Claude prompt.
 
+### Crash detection and recovery
+
+Three layers of protection prevent tickets from getting stuck when agents die unexpectedly:
+
+1. **Unclaim all on swarm start** — `swarm start` automatically resets any `in_progress` tickets to `open` status before starting containers. This handles container crashes, OOM kills, scale-downs, and OAuth token expiry. Logged as "Auto-released on swarm start" in activity_log.
+
+2. **SIGTERM trap in agent-loop.sh** — When Docker sends SIGTERM (via `docker stop`), the agent gracefully unclaims its current ticket, posts a comment, and exits cleanly. The ticket returns to the pool immediately.
+
+3. **Cron-based stall detection** — Each container runs `check-alive.sh` every 5 minutes. If no log file activity for 20+ minutes, it sends SIGTERM to agent-loop, triggering graceful shutdown. Docker's `restart: unless-stopped` policy brings the container back fresh.
+
+| Environment variable | Default | Purpose |
+|---------------------|---------|---------|
+| `STALE_THRESHOLD_MINUTES` | 20 | Minutes of inactivity before check-alive.sh restarts the agent |
+
+Logs from stall detection are at `/var/log/check-alive.log` inside containers.
+
 ## Swarm CLI (`swarm/swarm.py`)
 
 Installed at `~/.local/bin/swarm`. Finds the project root by walking up from cwd looking for `.swarm/`.
@@ -257,7 +275,7 @@ Installed at `~/.local/bin/swarm`. Finds the project root by walking up from cwd
 | Command | What it does |
 |---------|--------------|
 | `swarm init <dir>` | Scaffold `.swarm/`, generate configs, run Phase 2 interview |
-| `swarm start` | Extract OAuth token from Keychain, `docker compose up -d --build` |
+| `swarm start` | Unclaim stuck tickets, extract OAuth token, `docker compose up -d --build` |
 | `swarm stop` | `docker compose down` |
 | `swarm status` | Show containers + ticket queue counts |
 | `swarm logs <svc>` | `docker compose logs -f <service>` |

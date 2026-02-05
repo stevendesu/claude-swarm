@@ -43,6 +43,12 @@ git config user.email "agent@swarm.local"
 # ── Export TICKET_DB so ticket CLI finds it ───────────────────────────────
 export TICKET_DB="/tickets/tickets.db"
 
+# ── Start cron for stall detection ────────────────────────────────────────
+# Cron runs check-alive.sh every 5 minutes to detect stalled agents.
+# If no log activity for 20+ minutes, it sends SIGTERM to restart the agent.
+cron
+echo "[$AGENT_ID] Started cron daemon for stall detection"
+
 # ── Hand off to the agent loop ────────────────────────────────────────────
 echo "[$AGENT_ID] Starting agent loop..."
 exec /usr/local/bin/agent-loop.sh

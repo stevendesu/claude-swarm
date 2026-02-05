@@ -33,25 +33,25 @@ Ideas:
 - Include agent log excerpts in the escalation comment so the human has context
 - Add a `needs_decomposition` flag or label system for tickets
 
-## 4. Agent crash detection
+## 4. Agent crash detection ✅ IMPLEMENTED
 
 If a container crashes (OOM, Docker restart, etc.), the ticket stays `in_progress` with an assignee, but nobody is working on it.
 
-Ideas:
-- Heartbeat: agents periodically touch a file or update a timestamp. A monitor process detects stale heartbeats and unclaims tickets
-- Use Docker health checks — if a container is unhealthy, unclaim its tickets
-- The monitor web app could detect containers that are down and auto-unclaim their in-progress tickets
-- On agent startup, check if this agent already has in_progress tickets from a previous run. If the branch has no new commits, unclaim and start fresh
-- See if Claude Code has built-in crash recovery or session resumption
+**Solution implemented (three layers):**
 
-## 5. Claimed but not worked
+1. **Unclaim all on swarm start** — `swarm start` calls `unclaim_all_in_progress()` which resets any in_progress tickets to open status. This handles container crashes, OOM kills, scale-downs, and OAuth expiry. Activity is logged as "Auto-released on swarm start".
+
+2. **SIGTERM trap in agent-loop.sh** — When Docker sends SIGTERM (via `docker stop`), the agent gracefully unclaims its current ticket before exiting. The ticket returns to the pool immediately rather than waiting for the next swarm start.
+
+3. **Cron-based stall detection** — Each container runs a cron job (every 5 minutes) that checks log file activity. If no logs have been written for 20+ minutes, it sends SIGTERM to agent-loop, triggering graceful shutdown. Docker's `restart: unless-stopped` policy brings the container back fresh.
+
+**Configuration:** `STALE_THRESHOLD_MINUTES` env var (default 20) controls how long before a stalled agent is restarted.
+
+## 5. Claimed but not worked ✅ IMPLEMENTED
 
 A ticket could be claimed but the agent is idle (waiting on rate limits, sleeping in a retry loop, or simply stuck without crashing).
 
-Ideas:
-- Track the last activity timestamp per ticket (last comment, last commit). If stale for M minutes, unclaim
-- The agent loop already has `MAX_TURNS` but doesn't have a wall-clock timeout. Add one
-- Combine with heartbeat: if the agent process is alive but hasn't made progress, force-kill the Claude session and unclaim
+**Solution:** The cron-based stall detection (Layer 3 above) handles this case. If the agent-loop process is alive but not making progress (no log file updates), check-alive.sh detects the stall and restarts the agent after 20 minutes of inactivity.
 
 ## 6. Merge conflict loops
 
