@@ -560,6 +560,24 @@ def cmd_init(args):
             os.remove(sentinel_path)
         os.unlink(mcp_config_file.name)
 
+        # Check if the interview actually produced changes to PROJECT.md.
+        # If the user aborted with CTRL+C, PROJECT.md will still be the template.
+        diff_check = subprocess.run(
+            ["git", "-C", project_dir, "diff", "--quiet", "PROJECT.md"],
+            capture_output=True,
+        )
+        if diff_check.returncode == 0:
+            # No changes — interview was aborted
+            print()
+            print("User aborted swarm initialization interview.")
+            print()
+            print("Clean up:")
+            print()
+            print(f"  1. Remove orphaned files:")
+            print(f"     rm -rf {project_dir}")
+            print()
+            sys.exit(1)
+
         # Make verify.sh executable (Write tool doesn't set permissions)
         verify_sh_path = os.path.join(project_dir, "verify.sh")
         if os.path.isfile(verify_sh_path):
