@@ -8,4 +8,5 @@ services:
     volumes:
       - ./.swarm/tickets:/tickets
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./.swarm/agent-logs:/agent-logs:ro
     restart: unless-stopped

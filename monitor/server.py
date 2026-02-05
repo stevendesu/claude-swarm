@@ -29,6 +29,7 @@ DB_PATH = os.environ.get("TICKET_DB", "/tickets/tickets.db")
 PORT = int(os.environ.get("PORT", "3000"))
 STATIC_DIR = Path(__file__).parent / "static"
 DOCKER_SOCKET = "/var/run/docker.sock"
+AGENT_LOGS_DIR = Path(os.environ.get("AGENT_LOGS_DIR", "/agent-logs"))
 
 # ---------------------------------------------------------------------------
 # Database helpers
@@ -603,6 +604,139 @@ def api_agent_logs(container_name: str) -> tuple[int, dict]:
     return 200, {"logs": logs, "container": container_name}
 
 
+def api_agent_sessions(agent_name: str) -> tuple[int, dict]:
+    """GET /api/agents/:name/sessions — list session log files for an agent."""
+    # Sanitize agent name
+    if "/" in agent_name or ".." in agent_name:
+        return 400, {"error": "Invalid agent name"}
+
+    agent_dir = AGENT_LOGS_DIR / agent_name
+    if not agent_dir.is_dir():
+        return 200, {"sessions": []}
+
+    sessions = []
+    for f in sorted(agent_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        if not f.is_file() or not f.name.endswith(".log"):
+            continue
+        stat = f.stat()
+        # Parse filename to extract metadata
+        name = f.name
+        session_type = "work"
+        ticket_id = None
+        if name.startswith("ticket-"):
+            parts = name.split("-", 2)
+            if len(parts) >= 2:
+                try:
+                    ticket_id = int(parts[1])
+                except ValueError:
+                    pass
+            if "conflict" in name:
+                session_type = "conflict"
+        elif name.startswith("proposal-"):
+            session_type = "proposal"
+
+        sessions.append({
+            "filename": name,
+            "type": session_type,
+            "ticket_id": ticket_id,
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        })
+
+    return 200, {"sessions": sessions}
+
+
+def parse_stream_json_entry(obj: dict) -> dict | None:
+    """Parse a single Claude Code stream-json entry into a display-friendly dict."""
+    msg_type = obj.get("type", "")
+
+    if msg_type == "assistant":
+        # Extract text from message.content blocks
+        content = obj.get("message", {}).get("content", [])
+        texts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                texts.append(block.get("text", ""))
+        if texts:
+            return {"type": "assistant", "content": "\n".join(texts)}
+        return None
+
+    if msg_type == "tool_use":
+        name = obj.get("name", "unknown")
+        tool_input = json.dumps(obj.get("input", {}), default=str)
+        if len(tool_input) > 500:
+            tool_input = tool_input[:500] + "..."
+        return {"type": "tool_use", "content": f"{name}: {tool_input}"}
+
+    if msg_type == "tool_result":
+        content = obj.get("content", "")
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+            content = "\n".join(parts)
+        content = str(content)
+        if len(content) > 2000:
+            content = content[:2000] + "..."
+        return {"type": "tool_result", "content": content}
+
+    if msg_type == "result":
+        result_text = ""
+        result_obj = obj.get("result", "")
+        if isinstance(result_obj, str):
+            result_text = result_obj
+        elif isinstance(result_obj, dict):
+            # Result may have content blocks like assistant messages
+            content = result_obj.get("content", [])
+            if isinstance(content, list):
+                texts = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        texts.append(block.get("text", ""))
+                result_text = "\n".join(texts)
+            else:
+                result_text = str(result_obj)
+        if len(result_text) > 2000:
+            result_text = result_text[:2000] + "..."
+        return {"type": "result", "content": result_text}
+
+    # Skip system, init, and other message types
+    return None
+
+
+def api_agent_session_content(agent_name: str, filename: str) -> tuple[int, dict]:
+    """GET /api/agents/:name/sessions/:filename — parsed session log content."""
+    # Path traversal protection
+    if "/" in agent_name or ".." in agent_name:
+        return 400, {"error": "Invalid agent name"}
+    if "/" in filename or ".." in filename:
+        return 400, {"error": "Invalid filename"}
+
+    file_path = AGENT_LOGS_DIR / agent_name / filename
+    if not file_path.is_file():
+        return 404, {"error": "Session log not found"}
+
+    entries = []
+    try:
+        with open(file_path, "r", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    entry = parse_stream_json_entry(obj)
+                    if entry:
+                        entries.append(entry)
+                except json.JSONDecodeError:
+                    continue
+    except Exception as e:
+        return 500, {"error": f"Failed to read log: {e}"}
+
+    return 200, {"entries": entries}
+
+
 def api_stats() -> tuple[int, dict]:
     """GET /api/stats — summary statistics."""
     conn = get_db()
@@ -815,6 +949,20 @@ class MonitorHandler(BaseHTTPRequestHandler):
             m = re.match(r"^/api/agents/([^/]+)/logs$", path)
             if m and method == "GET":
                 status, data = api_agent_logs(m.group(1))
+                self._send_json(status, data)
+                return
+
+            # GET /api/agents/:name/sessions
+            m = re.match(r"^/api/agents/([^/]+)/sessions$", path)
+            if m and method == "GET":
+                status, data = api_agent_sessions(m.group(1))
+                self._send_json(status, data)
+                return
+
+            # GET /api/agents/:name/sessions/:filename
+            m = re.match(r"^/api/agents/([^/]+)/sessions/([^/]+)$", path)
+            if m and method == "GET":
+                status, data = api_agent_session_content(m.group(1), m.group(2))
                 self._send_json(status, data)
                 return
 

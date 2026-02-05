@@ -218,6 +218,7 @@ def cmd_init(args):
     os.makedirs(os.path.join(swarm_dir, "agent"), exist_ok=True)
     os.makedirs(os.path.join(swarm_dir, "ticket"), exist_ok=True)
     os.makedirs(os.path.join(swarm_dir, "tickets"), exist_ok=True)  # bind-mount dir for tickets.db
+    os.makedirs(os.path.join(swarm_dir, "agent-logs"), exist_ok=True)  # per-agent session logs
     # ── 2. Copy agent/ files ────────────────────────────────────────────
     agent_src = os.path.join(PROJECT_ROOT_OF_SWARM, "agent")
     if os.path.isdir(agent_src):
@@ -753,6 +754,9 @@ def cmd_regenerate(args):
     with open(compose_path, "w") as f:
         f.write(compose_content)
     print(f"Regenerated docker-compose.yml")
+
+    # Ensure agent-logs directory exists
+    os.makedirs(os.path.join(swarm_dir, "agent-logs"), exist_ok=True)
 
     # Re-copy agent/ files
     agent_src = os.path.join(PROJECT_ROOT_OF_SWARM, "agent")

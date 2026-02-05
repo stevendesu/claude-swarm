@@ -6,6 +6,7 @@ Browser-based dashboard for the autonomous agent swarm system. Provides a real-t
 
 - Reads and writes the shared SQLite database (tickets, comments, activity log)
 - Queries the Docker Engine API for agent container status, stats, and logs
+- Reads Claude Code session logs from `/agent-logs/` (bind-mounted from `.swarm/agent-logs/`)
 - Serves a single-page app with three tabs: Tickets, Agents, Activity
 - Auto-refreshes every 5 seconds
 
@@ -37,8 +38,9 @@ The server listens on `0.0.0.0:3000` by default. Configure with environment vari
 
 | Variable    | Default                | Description                  |
 |-------------|------------------------|------------------------------|
-| `TICKET_DB` | `/tickets/tickets.db`  | Path to SQLite database      |
-| `PORT`      | `3000`                 | HTTP listen port             |
+| `TICKET_DB`      | `/tickets/tickets.db`  | Path to SQLite database                |
+| `PORT`           | `3000`                 | HTTP listen port                       |
+| `AGENT_LOGS_DIR` | `/agent-logs`          | Directory containing per-agent session logs |
 
 ## REST API
 
@@ -65,8 +67,10 @@ All API endpoints return JSON. The server adds CORS headers for cross-origin acc
 
 | Method | Endpoint                  | Description                          |
 |--------|---------------------------|--------------------------------------|
-| GET    | `/api/agents`             | List containers with stats           |
-| GET    | `/api/agents/:name/logs`  | Fetch logs for a container           |
+| GET    | `/api/agents`                       | List containers with stats               |
+| GET    | `/api/agents/:name/logs`            | Fetch Docker container logs              |
+| GET    | `/api/agents/:name/sessions`        | List Claude Code session log files       |
+| GET    | `/api/agents/:name/sessions/:file`  | Parsed session log content (stream-json) |
 
 ### Stats
 
