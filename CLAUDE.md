@@ -166,7 +166,7 @@ Types enable the dashboard to show appropriate actions:
 - **task**: Standard claim/complete workflow
 - **proposal**: Approve / Approve with Edits / Reject buttons
 - **question**: Answer & Unblock (posts answer to blocked ticket, marks question done)
-- **verify**: Pass / Fail (pass marks done; fail creates a fix task for agents, inheriting dependents)
+- **verify**: Pass / Fail (pass marks done; fail creates a fix task for agents AND a new verify ticket blocked by the fix task, with original downstreams transferred to the new verify ticket — chain: fix task → re-verify → downstream tickets)
 
 Smart defaults: when creating a ticket assigned to `human`, the type defaults to `proposal` if standalone or `question` if it blocks another ticket. Use `--type` to override.
 
@@ -296,7 +296,7 @@ Two mechanisms support tech stacks that don't work out-of-the-box in the Linux a
 - Preserved by `swarm regenerate` (not overwritten from source repo)
 - Interview writes a populated version for stacks that need it
 
-**Human verification ticket pattern** — For platforms that truly can't build in Linux (iOS/Xcode, Windows-native), `verify.sh` runs whatever checks it can in-container (linting, syntax checks), then creates a `verify` ticket assigned to `human` with `--block-dependents-of $TICKET_ID` and exits 0. Code gets merged; the verify ticket blocks downstream work until the human clicks Pass. If the human clicks Fail, a fix task is created for agents (inheriting the verify ticket's dependents), and the cycle repeats until the code passes.
+**Human verification ticket pattern** — For platforms that truly can't build in Linux (iOS/Xcode, Windows-native), `verify.sh` runs whatever checks it can in-container (linting, syntax checks), then creates a `verify` ticket assigned to `human` with `--block-dependents-of $TICKET_ID` and exits 0. Code gets merged; the verify ticket blocks downstream work until the human clicks Pass. If the human clicks Fail, a fix task AND a new re-verify ticket are created. The re-verify ticket is blocked by the fix task and inherits all downstream blockers from the original verify ticket (chain: fix task → re-verify → downstreams). This cycle repeats until the code passes.
 
 Environment variables available inside `verify.sh`: `TICKET_ID`, `TICKET_TITLE`, `AGENT_ID`.
 
@@ -337,7 +337,7 @@ Python HTTP server (stdlib only) reading the SQLite database and Docker socket. 
 | `/api/tickets/:id/complete` | POST | Mark ticket done |
 | `/api/tickets/:id/update` | POST | Update ticket fields |
 | `/api/tickets/:id/pass` | POST | Pass a verify ticket (marks done) |
-| `/api/tickets/:id/fail` | POST | Fail a verify ticket (creates fix task, inherits dependents) |
+| `/api/tickets/:id/fail` | POST | Fail a verify ticket (creates fix task + re-verify ticket) |
 | `/api/activity` | GET | Activity feed (chronological) |
 | `/api/agents` | GET | Docker container status (via Docker socket) |
 | `/api/agents/:name/logs` | GET | Container logs |

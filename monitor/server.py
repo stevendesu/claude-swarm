@@ -521,7 +521,7 @@ def api_pass_verify_ticket(ticket_id: int) -> tuple[int, dict]:
 
 
 def api_fail_verify_ticket(ticket_id: int, body: dict) -> tuple[int, dict]:
-    """POST /api/tickets/:id/fail — fail a verify ticket, create fix task."""
+    """POST /api/tickets/:id/fail — fail a verify ticket, create fix task and re-verify ticket."""
     reason = body.get("reason")
     if not reason:
         return 400, {"error": "reason is required"}
@@ -534,7 +534,7 @@ def api_fail_verify_ticket(ticket_id: int, body: dict) -> tuple[int, dict]:
         if not row:
             return 404, {"error": f"Ticket {ticket_id} not found"}
 
-        # Create a new fix task with the failure reason as description
+        # 1. Create a fix task with the failure reason as description
         cur = conn.execute(
             "INSERT INTO tickets (title, description, created_by, type) "
             "VALUES (?, ?, ?, ?)",
@@ -544,8 +544,31 @@ def api_fail_verify_ticket(ticket_id: int, body: dict) -> tuple[int, dict]:
         log_activity(conn, fix_id, "human", "created",
                      f"Fix task from failed verification #{ticket_id}")
 
-        # Copy blocking relationships from verify ticket to fix task
-        # (all tickets blocked by the verify ticket should now be blocked by the fix task)
+        # 2. Create a new verify ticket blocked by the fix task
+        # Strip existing "Re-verify: " prefix to avoid stacking
+        original_title = row["title"]
+        if original_title.startswith("Re-verify: "):
+            original_title = original_title[len("Re-verify: "):]
+        cur = conn.execute(
+            "INSERT INTO tickets (title, description, assigned_to, created_by, type) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (f"Re-verify: {original_title}",
+             f"Re-verification after fix task #{fix_id}",
+             "human", "human", "verify"),
+        )
+        verify_id = cur.lastrowid
+        log_activity(conn, verify_id, "human", "created",
+                     f"Re-verify ticket from failed verification #{ticket_id}")
+
+        # 3. New verify ticket is blocked by the fix task
+        conn.execute(
+            "INSERT INTO blockers (ticket_id, blocked_by) VALUES (?, ?)",
+            (verify_id, fix_id),
+        )
+        log_activity(conn, verify_id, "human", "blocker_added",
+                     f"Blocked by fix task #{fix_id}")
+
+        # 4. Transfer downstream blockers: old verify ticket → new verify ticket
         dependents = conn.execute(
             "SELECT ticket_id FROM blockers WHERE blocked_by = ?",
             (ticket_id,),
@@ -555,10 +578,10 @@ def api_fail_verify_ticket(ticket_id: int, body: dict) -> tuple[int, dict]:
             try:
                 conn.execute(
                     "INSERT INTO blockers (ticket_id, blocked_by) VALUES (?, ?)",
-                    (dep_id, fix_id),
+                    (dep_id, verify_id),
                 )
                 log_activity(conn, dep_id, "human", "blocker_added",
-                             f"Blocked by #{fix_id} (from failed verify #{ticket_id})")
+                             f"Blocked by re-verify #{verify_id} (from failed verify #{ticket_id})")
             except sqlite3.IntegrityError:
                 pass
 
@@ -566,7 +589,8 @@ def api_fail_verify_ticket(ticket_id: int, body: dict) -> tuple[int, dict]:
         conn.execute(
             "INSERT INTO comments (ticket_id, author, body) VALUES (?, ?, ?)",
             (ticket_id, "human",
-             f"Verification failed. Reason: {reason}\nCreated fix task #{fix_id}"),
+             f"Verification failed. Reason: {reason}\n"
+             f"Created fix task #{fix_id} and re-verify task #{verify_id}"),
         )
 
         # Mark verify ticket done
@@ -576,10 +600,11 @@ def api_fail_verify_ticket(ticket_id: int, body: dict) -> tuple[int, dict]:
             (ticket_id,),
         )
         log_activity(conn, ticket_id, "human", "verify_failed",
-                     f"Verification failed, created fix task #{fix_id}")
+                     f"Verification failed, created fix task #{fix_id} "
+                     f"and re-verify task #{verify_id}")
 
         conn.commit()
-        return 200, {"ok": True, "fix_ticket_id": fix_id}
+        return 200, {"ok": True, "fix_ticket_id": fix_id, "verify_ticket_id": verify_id}
     finally:
         conn.close()
 

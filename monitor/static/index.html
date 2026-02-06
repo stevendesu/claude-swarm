@@ -1023,7 +1023,7 @@ async function failVerifyTicket(id) {
   }
   const result = await api('POST', '/api/tickets/' + id + '/fail', { reason });
   if (result.ok) {
-    alert('Verification failed. Created fix task #' + result.fix_ticket_id);
+    alert('Verification failed. Created fix task #' + result.fix_ticket_id + ' and re-verify task #' + result.verify_ticket_id);
   }
   closeModal();
   refresh();

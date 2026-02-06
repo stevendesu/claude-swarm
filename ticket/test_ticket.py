@@ -887,6 +887,148 @@ def test_block_dependents_of_nonexistent():
         os.unlink(db)
 
 
+def test_verify_fail_creates_reverify_chain():
+    """Test that failing a verify ticket creates both a fix task and a
+    re-verify ticket with the correct blocker chain:
+    fix task → new verify ticket → downstream tickets."""
+    print("test_verify_fail_creates_reverify_chain")
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db = f.name
+    try:
+        init_db(db)
+
+        # Setup: create a verify ticket (#1) assigned to human
+        run(["create", "Verify build", "--type", "verify", "--assign", "human"], db=db)
+
+        # Create downstream tickets (#2, #3) blocked by the verify ticket
+        run(["create", "Deploy to staging", "--blocked-by", "1"], db=db)
+        run(["create", "Run integration tests", "--blocked-by", "1"], db=db)
+
+        # Import and call api_fail_verify_ticket directly
+        import importlib.util
+        server_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                   "monitor", "server.py")
+        spec = importlib.util.spec_from_file_location("server", server_path)
+        server = importlib.util.module_from_spec(spec)
+        # Point server at our test DB
+        import types
+        original_db = os.environ.get("TICKET_DB")
+        os.environ["TICKET_DB"] = db
+        # Reload to pick up the env var
+        server.DB_PATH = db
+        spec.loader.exec_module(server)
+
+        # Fail the verify ticket
+        status_code, result = server.api_fail_verify_ticket(1, {"reason": "Build failed on ARM"})
+        assert_eq("fail status code", status_code, 200)
+        assert_eq("fail result ok", result["ok"], True)
+
+        fix_id = result["fix_ticket_id"]
+        verify_id = result["verify_ticket_id"]
+
+        # Verify fix task was created
+        r = run(["show", str(fix_id), "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("fix task title", data["title"], "Fix: Verify build")
+        assert_eq("fix task type", data["type"], "task")
+
+        # Verify new verify ticket was created
+        r = run(["show", str(verify_id), "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("reverify title", data["title"], "Re-verify: Verify build")
+        assert_eq("reverify type", data["type"], "verify")
+        assert_eq("reverify assigned", data["assigned_to"], "human")
+        # New verify ticket should be blocked by fix task
+        assert_in("reverify blocked by fix", data["blocked_by"], fix_id)
+
+        # Downstream tickets should be blocked by new verify ticket (NOT fix task)
+        r = run(["show", "2", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        blocked_by_ids = data["blocked_by"]
+        assert_in("downstream 2 blocked by reverify", blocked_by_ids, verify_id)
+
+        r = run(["show", "3", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        blocked_by_ids = data["blocked_by"]
+        assert_in("downstream 3 blocked by reverify", blocked_by_ids, verify_id)
+
+        # Original verify ticket should be done
+        r = run(["show", "1", "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        assert_eq("original verify done", data["status"], "done")
+
+        # Fix task should be claimable (no blockers)
+        r = run(["claim-next", "--agent", "agent-1", "--format", "json"], db=db)
+        assert_rc("claim fix task rc", r, 0)
+        data = json.loads(r.stdout)
+        assert_eq("claimed fix task", data["id"], fix_id)
+
+        # Complete the fix task — re-verify ticket should become unblocked
+        # but it's assigned to human, so claim-next won't pick it up
+        run(["complete", str(fix_id)], db=db)
+        run(["mark-done", str(fix_id)], db=db)
+
+        # Downstreams should still be blocked (by re-verify ticket)
+        r = run(["claim-next", "--agent", "agent-2"], db=db)
+        assert_rc("downstreams still blocked rc", r, 1)
+
+        # Mark the re-verify ticket done (simulating human passing it)
+        run(["mark-done", str(verify_id)], db=db)
+
+        # NOW downstreams should be claimable
+        r = run(["claim-next", "--agent", "agent-2", "--format", "json"], db=db)
+        assert_rc("downstream claimable rc", r, 0)
+        data = json.loads(r.stdout)
+        assert_eq("claims downstream 2", data["id"], 2)
+
+        # Restore env
+        if original_db is not None:
+            os.environ["TICKET_DB"] = original_db
+        elif "TICKET_DB" in os.environ:
+            del os.environ["TICKET_DB"]
+    finally:
+        os.unlink(db)
+
+
+def test_verify_fail_strips_reverify_prefix():
+    """Test that failing a Re-verify ticket doesn't stack prefixes."""
+    print("test_verify_fail_strips_reverify_prefix")
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db = f.name
+    try:
+        init_db(db)
+
+        # Create a ticket titled "Re-verify: Build" to simulate a re-verify ticket
+        run(["create", "Re-verify: Build", "--type", "verify", "--assign", "human"], db=db)
+
+        # Import server and fail it
+        import importlib.util
+        server_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                   "monitor", "server.py")
+        spec = importlib.util.spec_from_file_location("server", server_path)
+        server = importlib.util.module_from_spec(spec)
+        original_db = os.environ.get("TICKET_DB")
+        os.environ["TICKET_DB"] = db
+        server.DB_PATH = db
+        spec.loader.exec_module(server)
+
+        status_code, result = server.api_fail_verify_ticket(1, {"reason": "Still broken"})
+        assert_eq("fail strip prefix status", status_code, 200)
+
+        verify_id = result["verify_ticket_id"]
+        r = run(["show", str(verify_id), "--format", "json"], db=db)
+        data = json.loads(r.stdout)
+        # Should be "Re-verify: Build", NOT "Re-verify: Re-verify: Build"
+        assert_eq("no stacked prefix", data["title"], "Re-verify: Build")
+
+        if original_db is not None:
+            os.environ["TICKET_DB"] = original_db
+        elif "TICKET_DB" in os.environ:
+            del os.environ["TICKET_DB"]
+    finally:
+        os.unlink(db)
+
+
 def test_migrate_command():
     print("test_migrate_command")
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -936,6 +1078,8 @@ if __name__ == "__main__":
         test_block_dependents_of,
         test_block_dependents_of_no_dependents,
         test_block_dependents_of_nonexistent,
+        test_verify_fail_creates_reverify_chain,
+        test_verify_fail_strips_reverify_prefix,
         test_migrate_command,
     ]
 
